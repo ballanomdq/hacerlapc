@@ -5,7 +5,6 @@ import random
 import os
 import glob
 import re
-from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -17,6 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="HACER LA PC - OSECAC", layout="wide")
 st.title("💻 HACER LA PC - Sistema Unificado")
+st.markdown("**Consulta Dual SISA + ANSES (CODEM en PDF)**")
 
 with st.container():
     st.subheader("📋 Ingreso de Datos")
@@ -24,11 +24,10 @@ with st.container():
     buscar_btn = st.button("🚀 Iniciar Consulta Dual", type="primary")
 
 log_container = st.expander("📋 Log de ejecución", expanded=True)
-
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# --- DRIVER ---
+# --- DRIVER (igual que antes) ---
 def iniciar_driver():
     options = Options()
     options.add_argument("--headless=new")
@@ -72,12 +71,11 @@ def consultar_sisa(driver, dni, es_primer_dni):
         cols = fila.find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
             res = {"SISA": cols[3].text.strip(), "OS_SISA": cols[4].text.strip()}
-            log_message(f"✅ SISA OK: {dni}")
     except:
-        log_message(f"⚠️ SISA: No hallado {dni}")
+        pass
     return res
 
-# --- CODEM CON PDF (todo limpio) ---
+# --- CODEM CON PDF ---
 def consultar_codem(driver, dni):
     res = {"CODEM": "No hallado", "ObraSocial": "N/A", "Titular": "N/A", "Familiares": "N/A", "CUIT_Empleador": "N/A"}
     try:
@@ -99,53 +97,32 @@ def consultar_codem(driver, dni):
 
         for f in glob.glob("/tmp/*.pdf"): os.remove(f)
 
-        log_message(f"Buscando botón PDF para {dni}...")
+        print_btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, "//img[contains(@src, 'imprimir2.gif')]")))
+        driver.execute_script("arguments[0].click();", print_btn)
+        time.sleep(random.uniform(9, 14))
 
-        xpaths = ["//img[contains(@src, 'imprimir2.gif')]"] + [  # ← el que siempre funciona
-            "//a[.//img[contains(@src, 'imprimir2.gif')]]", "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'imprimir')]"
-        ]
+        pdf_files = glob.glob("/tmp/*.pdf")
+        if pdf_files:
+            pdf_path = max(pdf_files, key=os.path.getmtime)
+            reader = PdfReader(pdf_path)
+            texto_pdf = "".join(page.extract_text() + "\n" for page in reader.pages)
 
-        print_btn = None
-        for xp in xpaths:
-            try:
-                print_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
-                log_message(f"✅ Botón PDF encontrado")
-                break
-            except:
-                continue
+            res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.I) else "Sin datos"
+            res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.I) else "N/A"
+            res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.I).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.I) else "N/A"
+            fam = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.I | re.DOTALL)
+            res["Familiares"] = fam.group(1).strip() if fam else "Sin familiares a cargo"
 
-        if print_btn:
-            driver.execute_script("arguments[0].click();", print_btn)
-            time.sleep(random.uniform(9, 14))
-
-            pdf_files = glob.glob("/tmp/*.pdf")
-            if pdf_files:
-                pdf_path = max(pdf_files, key=os.path.getmtime)
-                reader = PdfReader(pdf_path)
-                texto_pdf = "".join(page.extract_text() + "\n" for page in reader.pages)
-
-                # Limpieza perfecta
-                os_match = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL)
-                res["ObraSocial"] = os_match.group(1).strip().replace("Datos", "").strip() if os_match else "Sin datos"
-
-                res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.I) else "N/A"
-                res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.I).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.I) else "N/A"
-                
-                fam = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.I | re.DOTALL)
-                res["Familiares"] = fam.group(1).strip().replace("\n", " | ")[:800] if fam else "Sin familiares a cargo"
-
-                res["CODEM"] = "OK - PDF"
-                log_message(f"✅ CODEM PDF OK: {dni} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
-                os.remove(pdf_path)
-
-    except Exception as e:
-        log_message(f"❌ CODEM error {dni}: {str(e)[:100]}")
-
+            res["CODEM"] = "OK - PDF"
+            os.remove(pdf_path)
+    except:
+        pass
     return res
 
 # --- EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip() and d.strip().isdigit()]
+    
     if lista_dni:
         with st.status("Procesando...", expanded=True) as status:
             log_message(f"Iniciando {len(lista_dni)} DNI...")
@@ -163,30 +140,51 @@ if buscar_btn and dni_input:
 
             status.update(label="¡Terminado!", state="complete")
 
-        # TABLA FINAL CON COLUMNAS ANCHAS Y COMPLETAS
+        # TABLA LIMPIA
         final = []
         for i, d in enumerate(lista_dni):
-            fila = {"DNI": d}
-            fila.update(r_sisa[i])
-            fila.update(r_codem[i])
-            final.append(fila)
+            titular = r_codem[i].get("Titular", "N/A")
+            os_name = r_codem[i].get("ObraSocial", "")
+            status_ok = "✅ OSECAC Aprobado" if "COMERCIO" in os_name.upper() or "126205" in os_name else "⚠️ Revisar"
+            
+            final.append({
+                "DNI": d,
+                "Titular": titular,
+                "Status": status_ok,
+                "Ver": "👁️ Ver completa"
+            })
 
         df = pd.DataFrame(final)
-
-        # ←←← CONFIGURACIÓN PARA QUE NO SE CORTEN LAS COLUMNAS
-        column_config = {
-            "ObraSocial": st.column_config.TextColumn("ObraSocial", width="large"),
-            "Familiares": st.column_config.TextColumn("Familiares", width="large"),
-            "Titular": st.column_config.TextColumn("Titular", width="medium"),
-            "CUIT_Empleador": st.column_config.TextColumn("CUIT Empleador", width="small"),
-        }
-
+        
+        # TABLA PRINCIPAL (limpia y bonita)
         st.dataframe(
-            df,
+            df[["DNI", "Titular", "Status"]],
             use_container_width=True,
             hide_index=True,
-            column_config=column_config,
-            height=400  # más alto para ver todo
+            column_config={
+                "Status": st.column_config.TextColumn("Estado OSECAC", width="medium")
+            }
         )
 
-        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
+        # DETALLES EXPANDIBLES CON COLORES (como pediste)
+        st.markdown("### 👁️ Consultas Completas")
+        for i, row in df.iterrows():
+            with st.expander(f"👁️ {row['DNI']} - {row['Titular']}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.success("**SISA**")
+                    st.write(f"**Obra Social:** {r_sisa[i]['OS_SISA']}")
+                with col2:
+                    st.success("**CODEM (PDF)**")
+                    st.write(f"**Obra Social:** {r_codem[i]['ObraSocial']}")
+                    st.write(f"**CUIT Empleador:** {r_codem[i]['CUIT_Empleador']}")
+                
+                st.markdown("**👨‍👩‍👧‍👦 Grupo Familiar**")
+                st.info(r_codem[i]['Familiares'].replace(" | ", "\n\n"))
+                
+                st.markdown("**📋 Datos del Titular**")
+                st.write(f"**Nombre:** {r_codem[i]['Titular']}")
+
+        st.download_button("📥 Descargar Planilla Completa", 
+                         pd.DataFrame([{"DNI":d, **r_sisa[i], **r_codem[i]} for i,d in enumerate(lista_dni)]).to_csv(index=False).encode('utf-8'),
+                         "reporte_osecac.csv")
