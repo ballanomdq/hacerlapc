@@ -6,9 +6,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
-import base64
-import io
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 st.set_page_config(page_title="HACER LA PC - PUCO", layout="wide")
 st.title("💻 HACER LA PC - Consulta Masiva PUCO (SISA)")
@@ -33,11 +31,9 @@ result_container = st.container()
 log_container = st.expander("📋 Log de ejecución", expanded=False)
 
 def log_message(msg):
-    """Muestra mensajes en el expander de log."""
     log_container.markdown(f"- {msg}")
 
 def iniciar_driver():
-    """Configuración optimizada para Streamlit Cloud"""
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -61,67 +57,122 @@ def consultar_dni_selenium(dni):
         
         # 1. Ir a SISA
         driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
-        log_message("Página principal cargada, esperando 5 segundos...")
-        time.sleep(5)
+        log_message("Página principal cargada, esperando 8 segundos...")
+        time.sleep(8)  # Aumentamos la espera inicial
         
-        # 2. Buscar el módulo PUCO (múltiples intentos)
+        # 2. Buscar el módulo PUCO
         puco_encontrado = False
-        intentos = 0
-        while not puco_encontrado and intentos < 3:
+        for intento in range(3):
             try:
                 # Intentar con texto "PUCO"
-                puco = WebDriverWait(driver, 10).until(
+                puco = WebDriverWait(driver, 15).until(
                     EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
                 )
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", puco)
                 time.sleep(1)
                 driver.execute_script("arguments[0].click();", puco)
                 puco_encontrado = True
-                log_message("Módulo PUCO encontrado y clickeado (texto 'PUCO').")
+                log_message("Módulo PUCO clickeado (texto 'PUCO').")
+                break
             except:
                 try:
                     # Intentar con texto alternativo
                     puco = driver.find_element(By.XPATH, "//*[contains(text(), 'consulta de cobertura')]")
                     driver.execute_script("arguments[0].click();", puco)
                     puco_encontrado = True
-                    log_message("Módulo PUCO encontrado (texto 'consulta de cobertura').")
+                    log_message("Módulo PUCO clickeado (texto 'consulta de cobertura').")
+                    break
                 except:
-                    intentos += 1
-                    log_message(f"Intento {intentos} fallido, recargando página...")
+                    log_message(f"Intento {intento+1} fallido. Recargando...")
                     driver.refresh()
-                    time.sleep(3)
+                    time.sleep(5)
         
         if not puco_encontrado:
-            raise Exception("No se pudo encontrar el módulo PUCO después de 3 intentos.")
+            raise Exception("No se pudo encontrar el módulo PUCO.")
         
-        # 3. Esperar campo DNI
-        log_message("Esperando campo DNI...")
-        dni_field = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//input[contains(@name, 'dni') or contains(@id, 'dni')]"))
-        )
+        # 3. Esperar a que cargue el formulario (puede tardar)
+        log_message("Esperando 5 segundos para que cargue el formulario...")
+        time.sleep(5)
+        
+        # 4. Buscar campo DNI con selectores más flexibles
+        log_message("Buscando campo DNI...")
+        selectores_dni = [
+            "//input[contains(@name, 'dni')]",
+            "//input[contains(@id, 'dni')]",
+            "//input[@type='text' and contains(@placeholder, 'DNI')]",
+            "//input[contains(@class, 'dni')]"
+        ]
+        
+        dni_field = None
+        for selector in selectores_dni:
+            try:
+                dni_field = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.XPATH, selector))
+                )
+                log_message(f"Campo DNI encontrado con selector: {selector}")
+                break
+            except:
+                continue
+        
+        if not dni_field:
+            # Último recurso: buscar cualquier input visible
+            inputs = driver.find_elements(By.TAG_NAME, "input")
+            for inp in inputs:
+                if inp.is_displayed() and inp.get_attribute("type") in ["text", "search"]:
+                    dni_field = inp
+                    log_message("Campo DNI encontrado como el primer input visible.")
+                    break
+        
+        if not dni_field:
+            raise Exception("No se encontró el campo DNI.")
+        
         dni_field.clear()
         dni_field.send_keys(str(dni))
         log_message("DNI ingresado.")
         
-        # 4. Hacer clic en botón Buscar
+        # 5. Buscar botón Buscar
         log_message("Buscando botón 'Buscar'...")
-        try:
-            buscar_btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Buscar')]"))
-            )
-        except:
-            buscar_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-        driver.execute_script("arguments[0].click();", buscar_btn)
-        log_message("Botón 'Buscar' clickeado.")
+        selectores_boton = [
+            "//button[contains(text(), 'Buscar')]",
+            "//button[@type='submit']",
+            "//input[@type='submit']",
+            "//button[contains(@class, 'buscar')]"
+        ]
         
-        # 5. Esperar tabla de resultados
+        boton = None
+        for selector in selectores_boton:
+            try:
+                boton = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, selector))
+                )
+                break
+            except:
+                continue
+        
+        if not boton:
+            raise Exception("No se encontró el botón Buscar.")
+        
+        driver.execute_script("arguments[0].click();", boton)
+        log_message("Botón Buscar clickeado.")
+        
+        # 6. Esperar tabla de resultados
         log_message("Esperando resultados...")
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//table"))
-        )
-        log_message("Tabla de resultados encontrada.")
+        try:
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.XPATH, "//table"))
+            )
+            log_message("Tabla de resultados encontrada.")
+        except TimeoutException:
+            # Puede que no haya tabla pero sí un mensaje de "sin resultados"
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+            if "no se encontraron" in body_text.lower() or "sin resultados" in body_text.lower():
+                resultado["Estado"] = "❌ No encontrado"
+                log_message("El sistema indica que no hay resultados.")
+                return resultado
+            else:
+                raise Exception("No apareció la tabla de resultados.")
         
-        # 6. Extraer datos (primera fila)
+        # 7. Extraer datos
         filas = driver.find_elements(By.XPATH, "//table/tbody/tr")
         if len(filas) > 0:
             celdas = filas[0].find_elements(By.TAG_NAME, "td")
@@ -132,17 +183,15 @@ def consultar_dni_selenium(dni):
                 log_message(f"Datos extraídos: {cobertura} - {beneficiario}")
             else:
                 resultado["Estado"] = "⚠️ Sin datos suficientes"
-                log_message("La tabla no tiene suficientes columnas.")
         else:
             resultado["Estado"] = "❌ No encontrado"
-            log_message("No se encontraron filas en la tabla.")
             
     except Exception as e:
         error_msg = str(e)[:100]
         resultado["Estado"] = f"Error: {error_msg}"
         log_message(f"❌ Error: {error_msg}")
         
-        # Tomar screenshot para diagnóstico (se guarda en el log)
+        # Capturar pantalla para diagnóstico
         try:
             screenshot = driver.get_screenshot_as_png()
             st.image(screenshot, caption=f"Error en DNI {dni}", width=400)
@@ -154,7 +203,7 @@ def consultar_dni_selenium(dni):
     
     return resultado
 
-# --- Lógica principal ---
+# --- Lógica principal (corregida) ---
 if buscar_btn and dni_input:
     lista_dnis = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if not lista_dnis:
@@ -168,7 +217,7 @@ if buscar_btn and dni_input:
             status_text.text(f"Consultando DNI {dni}...")
             resultados.append(consultar_dni_selenium(dni))
             barra.progress((i + 1) / len(lista_dnis))
-            time.sleep(2)  # Pausa entre consultas
+            time.sleep(2)
         
         status_text.text("¡Proceso completado!")
         
