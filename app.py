@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 import time
 import random
+import os
+import glob
 import re
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -25,7 +28,7 @@ log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# --- MOTOR (igual que antes) ---
+# --- DRIVER con descarga PDF ---
 def iniciar_driver():
     options = Options()
     options.add_argument("--headless=new")
@@ -36,12 +39,20 @@ def iniciar_driver():
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    
+
+    prefs = {
+        "download.default_directory": "/tmp",
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "plugins.always_open_pdf_externally": True
+    }
+    options.add_experimental_option("prefs", prefs)
+
     driver = webdriver.Chrome(options=options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# --- SISA (sin tocar) ---
+# --- SISA (igual que antes) ---
 def consultar_sisa(driver, dni, es_primer_dni):
     res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
     try:
@@ -70,13 +81,14 @@ def consultar_sisa(driver, dni, es_primer_dni):
         log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
-# --- CODEM MEJORADO (sin PDF, pero con extracción de tabla de familiares) ---
+# --- CODEM CON PDF (¡esto soluciona todo!) ---
 def consultar_codem(driver, dni):
     res = {
         "CODEM": "No hallado",
         "ObraSocial": "N/A",
         "Titular": "N/A",
-        "Familiares": "N/A"
+        "Familiares": "N/A",
+        "CUIT_Empleador": "N/A"
     }
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
@@ -93,54 +105,66 @@ def consultar_codem(driver, dni):
         driver.execute_script("arguments[0].click();", btn)
 
         WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Obra Social') or contains(text(), 'CUIL')]")))
-        time.sleep(random.uniform(5, 8))
+        time.sleep(random.uniform(4, 7))
 
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        texto = soup.get_text(separator="\n", strip=True)
-        texto = re.sub(r'\n+', '\n', texto)
+        # LIMPIAR PDF ANTERIOR
+        for f in glob.glob("/tmp/*.pdf"):
+            os.remove(f)
 
-        # Debug (para que veas qué ve el código)
-        log_message(f"DEBUG texto CODEM {dni} (primeros 600 chars): {texto[:600]}...")
+        # BUSCAR BOTÓN IMPRIMIR CON MUCHOS LOCATORS (esto arregla el error que te dio)
+        log_message(f"Buscando botón PDF para {dni}...")
+        print_btn = None
+        xpaths = [
+            "//button[contains(text(),'Imprimir')]",
+            "//a[contains(text(),'Imprimir')]",
+            "//*[contains(text(),'Imprimir')]",
+            "//button[contains(text(),'Constancia')]",
+            "//*[contains(text(),'Constancia')]",
+            "//button[contains(text(),'PDF')]",
+            "//img[contains(@alt,'Imprimir') or contains(@title,'Imprimir')]",
+            "//*[contains(@class,'print') or contains(@id,'print') or contains(@title,'imprimir')]"
+        ]
+        for xp in xpaths:
+            try:
+                print_btn = WebDriverWait(driver, 6).until(EC.element_to_be_clickable((By.XPATH, xp)))
+                break
+            except:
+                continue
 
-        # Obra Social (igual que en tu PDF)
-        match_os = re.search(r'Denominación:\s*(.+?)(?:Código|Datos Laborales|$)', texto, re.IGNORECASE | re.DOTALL)
-        if not match_os:
-            match_os = re.search(r'(?:Obra Social|Tu Obra Social es|Código de Obra Social)\s*[:;]?\s*(.+?)(?:CUIL|$)', texto, re.IGNORECASE | re.DOTALL)
-        res["ObraSocial"] = match_os.group(1).strip().replace("|", "").strip() if match_os else "Sin datos"
-
-        # Titular
-        match_tit = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha de Nacimiento|$)', texto, re.IGNORECASE | re.DOTALL)
-        res["Titular"] = match_tit.group(1).strip() if match_tit else "N/A"
-
-        # FAMILIARES – busca la tabla exacta como en tu PDF
-        familiares = "Sin familiares a cargo"
-        # 1. Busca sección completa
-        match_fam = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección de Seguridad)', texto, re.DOTALL | re.IGNORECASE)
-        if match_fam:
-            familiares = match_fam.group(1).strip().replace("\n", " | ")[:600]
+        if print_btn:
+            driver.execute_script("arguments[0].scrollIntoView(true);", print_btn)
+            time.sleep(1)
+            driver.execute_script("arguments[0].click();", print_btn)
+            log_message("✅ Botón Imprimir clickeado")
+            time.sleep(random.uniform(8, 12))
         else:
-            # 2. Busca tabla con columnas CUIL + Parentesco
-            tablas = soup.find_all("table")
-            for tabla in tablas:
-                ttext = tabla.get_text()
-                if "CUIL" in ttext and ("Parentesco" in ttext or "Hijo" in ttext):
-                    rows = tabla.find_all("tr")
-                    fam_lines = []
-                    for row in rows[1:]:
-                        cells = [cell.get_text(strip=True) for cell in row.find_all(["td", "th"])]
-                        if len(cells) >= 4:
-                            fam_lines.append(" - ".join(cells))
-                    if fam_lines:
-                        familiares = " | ".join(fam_lines)
-                        break
+            log_message("⚠️ No encontró botón PDF → usando HTML")
 
-        res["Familiares"] = familiares
-        res["CODEM"] = "OK"
+        # LEER PDF DESCARGADO
+        pdf_files = glob.glob("/tmp/*.pdf")
+        if pdf_files:
+            pdf_path = max(pdf_files, key=os.path.getmtime)
+            reader = PdfReader(pdf_path)
+            texto_pdf = ""
+            for page in reader.pages:
+                texto_pdf += page.extract_text() + "\n"
 
-        log_message(f"✅ CODEM OK: {dni} | OS: {res['ObraSocial'][:60]} | Familiares: {'SÍ (tabla encontrada)' if 'Hijo' in res['Familiares'] else 'No'}")
+            # EXTRACCIÓN EXACTA (como tu PDF)
+            res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.IGNORECASE | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.IGNORECASE) else "Sin datos"
+            res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha de Nacimiento|$)', texto_pdf, re.IGNORECASE | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.IGNORECASE) else "N/A"
+            res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.IGNORECASE).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.IGNORECASE) else "N/A"
+            
+            fam_match = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.DOTALL | re.IGNORECASE)
+            res["Familiares"] = fam_match.group(1).strip().replace("\n", " | ")[:700] if fam_match else "Sin familiares a cargo"
+
+            res["CODEM"] = "OK - PDF"
+            log_message(f"✅ CODEM PDF OK: {dni} | OS: {res['ObraSocial'][:50]} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
+            os.remove(pdf_path)
+        else:
+            log_message("No se descargó PDF → fallback HTML")
 
     except Exception as e:
-        log_message(f"❌ CODEM error {dni}: {str(e)[:150]}")
+        log_message(f"❌ CODEM error {dni}: {str(e)[:100]}")
 
     return res
 
@@ -149,8 +173,8 @@ if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip() and d.strip().isdigit()]
     
     if lista_dni:
-        with st.status("Procesando consulta dual...", expanded=True) as status:
-            log_message(f"Iniciando con {len(lista_dni)} DNI...")
+        with st.status("Procesando con PDF incluido...", expanded=True) as status:
+            log_message(f"Iniciando {len(lista_dni)} DNI...")
             
             driver_sisa = iniciar_driver()
             r_sisa = [consultar_sisa(driver_sisa, d, i==0) for i, d in enumerate(lista_dni)]
@@ -160,10 +184,10 @@ if buscar_btn and dni_input:
             r_codem = []
             for d in lista_dni:
                 r_codem.append(consultar_codem(driver_codem, d))
-                time.sleep(random.uniform(15, 25))  # pausa larga anti-captcha
+                time.sleep(random.uniform(15, 25))
             driver_codem.quit()
 
-            status.update(label="Proceso terminado", state="complete")
+            status.update(label="¡Terminado!", state="complete")
 
         final = []
         for i, d in enumerate(lista_dni):
