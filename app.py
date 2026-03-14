@@ -1,70 +1,63 @@
 import streamlit as st
-import pandas as pd
 import requests
 import re
+import pandas as pd
 import time
 
-# --- SECCIÓN DEL CENSO ---
-st.divider()
-st.subheader("📊 Auditoría de Padrón - Mar del Plata")
+st.set_page_config(page_title="Auditoría OSECAC MDP", page_icon="🕵️")
 
-if st.button('🚀 Iniciar Barrido Masivo'):
-    # Tus credenciales que ya verificamos
-    URL = "http://200.51.42.43/empadronamiento/beneficiarios/emp_benef.asp"
-    HEADERS = {
-        'User-Agent': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 10.0; WOW64; Trident/7.0)',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': 'ASPSESSIONIDSAADDDQA=EEJPNPNCAMHCFHKELMGFLDAO; Usuario%280%29=rballano; Password=654321'
-    }
+st.title("🚀 Censo de Beneficiarios - Mar del Plata")
+st.write("Presioná el botón para iniciar el barrido. **No cierres la pestaña** hasta que termine.")
 
+# Datos de acceso (Los que ya tenés funcionando)
+URL = "http://200.51.42.43/empadronamiento/beneficiarios/emp_benef.asp"
+HEADERS = {
+    'User-Agent': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 10.0; WOW64; Trident/7.0)',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Cookie': 'ASPSESSIONIDSAADDDQA=EEJPNPNCAMHCFHKELMGFLDAO; Usuario%280%29=rballano; Password=654321'
+}
+
+if st.button("▶️ INICIAR BARRIDO MASIVO"):
     resultados = []
-    letras = "ABCDEFGHIJLMNOPRSTVZ" # Podés acortarla para probar primero
+    letras = "ABCDEFGHIJLMNOPRSTVZ"
     
     progreso = st.progress(0)
-    status_text = st.empty()
+    estado = st.empty()
     
     for i, letra in enumerate(letras):
-        status_text.text(f"Buscando letra: {letra}...")
+        # Actualizamos la interfaz para que sepas que NO está colgada
+        percent = (i + 1) / len(letras)
+        progreso.progress(percent)
+        estado.write(f"🔎 Buscando letra: **{letra}**...")
+        
         payload = {'Tableta': '3', 'Nombre': letra, 'localidad': '390', 'TipoObra': 'O'}
         
         try:
-            res = requests.post(URL, headers=HEADERS, data=payload, timeout=15)
-            # Buscamos DNI y Nombre con el patrón que descubrimos
+            res = requests.post(URL, headers=HEADERS, data=payload, timeout=20)
             matches = re.findall(r"Benef\(1,(\d+),'(.*?)'\);", res.text)
             
             for dni, nombre in matches:
                 resultados.append({'DNI': dni, 'Nombre': nombre})
             
-            # Actualizamos la barra de progreso
-            progreso.progress((i + 1) / len(letras))
-            time.sleep(1.5) # Pausa para que el servidor no sospeche
-            
+            time.sleep(1.5) # Pausa de seguridad
         except Exception as e:
             st.error(f"Error en letra {letra}: {e}")
 
-    # Cuando termina, creamos el Excel
     if resultados:
         df = pd.DataFrame(resultados)
-        nombre_archivo = "CENSO_MDP_OSECAC.xlsx"
-        df.to_excel(nombre_archivo, index=False)
+        # Guardamos el Excel en memoria para la descarga
+        excel_name = "CENSO_MDP.xlsx"
+        df.to_excel(excel_name, index=False)
         
-        st.success(f"✅ ¡Censo completado! Se encontraron {len(resultados)} beneficiarios.")
+        st.success(f"✅ ¡Finalizado! Se encontraron {len(resultados)} beneficiarios.")
         
-        # Botón para descargar el Excel generado en la nube a tu PC
-        with open(nombre_archivo, "rb") as f:
+        # EL BOTÓN DE DESCARGA APARECE SOLO AL FINAL
+        with open(excel_name, "rb") as f:
             st.download_button(
-                label="⬇️ Descargar Excel para Auditoría",
+                label="⬇️ DESCARGAR EXCEL COMPLETO",
                 data=f,
-                file_name=nombre_archivo,
+                file_name="Censo_OSECAC_MDP.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     else:
-        st.warning("No se encontraron datos. Revisá si la sesión rballano sigue activa.")
-# Esto hace que aparezca el botón para bajar el archivo a tu PC
-with open("CENSO_AUDITORIA_MDP.xlsx", "rb") as file:
-    st.download_button(
-        label="⬇️ DESCARGAR EXCEL DEL CENSO",
-        data=file,
-        file_name="Censo_OSECAC_MDP.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        st.warning("No se encontraron datos. Revisá si la sesión de rballano sigue activa.")
