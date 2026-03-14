@@ -48,7 +48,7 @@ def iniciar_driver():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# --- SISA (sin cambios) ---
+# --- SISA ---
 def consultar_sisa(driver, dni, es_primer_dni):
     res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
     try:
@@ -77,7 +77,7 @@ def consultar_sisa(driver, dni, es_primer_dni):
         log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
-# --- CODEM CON PDF (AHORA CON EL XPATH EXACTO DEL BOTÓN) ---
+# --- CODEM CON PDF (todo limpio) ---
 def consultar_codem(driver, dni):
     res = {"CODEM": "No hallado", "ObraSocial": "N/A", "Titular": "N/A", "Familiares": "N/A", "CUIT_Empleador": "N/A"}
     try:
@@ -97,63 +97,49 @@ def consultar_codem(driver, dni):
         WebDriverWait(driver, 35).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Obra Social') or contains(text(), 'CUIL')]")))
         time.sleep(random.uniform(6, 10))
 
-        # LIMPIAR PDF ANTERIOR
         for f in glob.glob("/tmp/*.pdf"): os.remove(f)
 
         log_message(f"Buscando botón PDF para {dni}...")
 
-        # XPATHS - EL PRIMERO ES EL EXACTO QUE VISTE EN DEVTOOLS (imprimir2.gif)
-        xpaths = [
-            "//img[contains(@src, 'imprimir2.gif')]",                    # ← ESTE ES EL QUE FUNCIONA
-            "//a[.//img[contains(@src, 'imprimir2.gif')]]",
-            "//a[contains(@href, 'doPostBack') and contains(@href, 'DGOOSS')]",
-            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'imprimir')]",
-            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'constancia')]",
-            "//*[contains(@id, 'Imprimir') or contains(@id, 'Print')]",
-            "//img[contains(@alt,'Imprimir') or contains(@title,'Imprimir')]",
-            "//*[contains(@class, 'print')]"
+        xpaths = ["//img[contains(@src, 'imprimir2.gif')]"] + [  # ← el que siempre funciona
+            "//a[.//img[contains(@src, 'imprimir2.gif')]]", "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'imprimir')]"
         ]
 
         print_btn = None
         for xp in xpaths:
             try:
                 print_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
-                log_message(f"✅ Botón PDF encontrado con: {xp}")
+                log_message(f"✅ Botón PDF encontrado")
                 break
             except:
                 continue
 
         if print_btn:
-            driver.execute_script("arguments[0].scrollIntoView(true);", print_btn)
-            time.sleep(1.5)
             driver.execute_script("arguments[0].click();", print_btn)
-            log_message("✅ Botón clickeado - esperando descarga PDF...")
             time.sleep(random.uniform(9, 14))
 
-            # LEER PDF DESCARGADO
             pdf_files = glob.glob("/tmp/*.pdf")
             if pdf_files:
                 pdf_path = max(pdf_files, key=os.path.getmtime)
                 reader = PdfReader(pdf_path)
                 texto_pdf = "".join(page.extract_text() + "\n" for page in reader.pages)
 
-                # Extracción exacta (como tu PDF)
-                res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.I) else "Sin datos"
+                # Limpieza perfecta
+                os_match = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL)
+                res["ObraSocial"] = os_match.group(1).strip().replace("Datos", "").strip() if os_match else "Sin datos"
+
                 res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.I) else "N/A"
                 res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.I).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.I) else "N/A"
+                
                 fam = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.I | re.DOTALL)
-                res["Familiares"] = fam.group(1).strip().replace("\n", " | ")[:700] if fam else "Sin familiares a cargo"
+                res["Familiares"] = fam.group(1).strip().replace("\n", " | ")[:800] if fam else "Sin familiares a cargo"
 
                 res["CODEM"] = "OK - PDF"
-                log_message(f"✅ CODEM PDF OK: {dni} | OS: {res['ObraSocial'][:55]} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
+                log_message(f"✅ CODEM PDF OK: {dni} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
                 os.remove(pdf_path)
-            else:
-                log_message("⚠️ PDF no se descargó")
-        else:
-            log_message("⚠️ No encontró botón PDF (imposible ahora)")
 
     except Exception as e:
-        log_message(f"❌ CODEM error {dni}: {str(e)[:120]}")
+        log_message(f"❌ CODEM error {dni}: {str(e)[:100]}")
 
     return res
 
@@ -161,7 +147,7 @@ def consultar_codem(driver, dni):
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip() and d.strip().isdigit()]
     if lista_dni:
-        with st.status("Procesando (PDF automático)...", expanded=True) as status:
+        with st.status("Procesando...", expanded=True) as status:
             log_message(f"Iniciando {len(lista_dni)} DNI...")
             
             driver_sisa = iniciar_driver()
@@ -177,6 +163,7 @@ if buscar_btn and dni_input:
 
             status.update(label="¡Terminado!", state="complete")
 
+        # TABLA FINAL CON COLUMNAS ANCHAS Y COMPLETAS
         final = []
         for i, d in enumerate(lista_dni):
             fila = {"DNI": d}
@@ -185,5 +172,21 @@ if buscar_btn and dni_input:
             final.append(fila)
 
         df = pd.DataFrame(final)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # ←←← CONFIGURACIÓN PARA QUE NO SE CORTEN LAS COLUMNAS
+        column_config = {
+            "ObraSocial": st.column_config.TextColumn("ObraSocial", width="large"),
+            "Familiares": st.column_config.TextColumn("Familiares", width="large"),
+            "Titular": st.column_config.TextColumn("Titular", width="medium"),
+            "CUIT_Empleador": st.column_config.TextColumn("CUIT Empleador", width="small"),
+        }
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_config,
+            height=400  # más alto para ver todo
+        )
+
         st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
