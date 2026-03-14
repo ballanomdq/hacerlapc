@@ -33,7 +33,7 @@ log_container = st.expander("📋 Log de ejecución", expanded=False)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# Inicializar selectores aprendidos
+# Inicializar selectores aprendidos para CODEM
 if 'codem_selector_dni' not in st.session_state:
     st.session_state.codem_selector_dni = None
     st.session_state.codem_selector_btn = None
@@ -54,7 +54,7 @@ def iniciar_driver():
     driver.set_page_load_timeout(20)
     return driver
 
-# ==================== FUNCIÓN SISA ====================
+# ==================== FUNCIÓN SISA (CON SELECTORES MÚLTIPLES) ====================
 def consultar_sisa(driver, dni, es_primer_dni):
     resultado = {"TipoDoc": "", "NroDoc": "", "Sexo": "", "Cobertura SISA": "", "Denominación": ""}
     try:
@@ -63,17 +63,22 @@ def consultar_sisa(driver, dni, es_primer_dni):
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
             time.sleep(3)
             
-            # Buscar PUCO (con timeout corto)
-            try:
-                puco = WebDriverWait(driver, 8).until(
-                    EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
-                )
-            except:
+            # Buscar módulo PUCO con varios intentos
+            puco = None
+            selectores_puco = [
+                (By.XPATH, "//*[contains(text(), 'PUCO')]"),
+                (By.XPATH, "//*[contains(text(), 'consulta de cobertura')]")
+            ]
+            for by, selector in selectores_puco:
                 try:
-                    puco = driver.find_element(By.XPATH, "//*[contains(text(), 'consulta de cobertura')]")
+                    puco = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((by, selector)))
+                    log_message(f"SISA: Módulo PUCO encontrado con: {selector}")
+                    break
                 except:
-                    log_message("SISA: No se encontró PUCO")
-                    return resultado
+                    continue
+            if not puco:
+                log_message("SISA: No se encontró módulo PUCO")
+                return resultado
             
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", puco)
             time.sleep(0.5)
@@ -81,16 +86,21 @@ def consultar_sisa(driver, dni, es_primer_dni):
             log_message("SISA: PUCO clickeado")
             time.sleep(2)
         
-        # Campo DNI
+        # Buscar campo DNI con múltiples selectores
         campo_dni = None
-        for intento in range(2):
+        selectores_dni = [
+            (By.XPATH, "//input[contains(@name, 'dni')]"),
+            (By.XPATH, "//input[contains(@id, 'dni')]"),
+            (By.XPATH, "//input[@type='text' and contains(@placeholder, 'DNI')]"),
+            (By.TAG_NAME, "input")
+        ]
+        for by, selector in selectores_dni:
             try:
-                campo_dni = WebDriverWait(driver, 4).until(
-                    EC.element_to_be_clickable((By.XPATH, "//input[contains(@name, 'dni')]"))
-                )
+                campo_dni = WebDriverWait(driver, 4).until(EC.element_to_be_clickable((by, selector)))
+                log_message(f"SISA: Campo DNI encontrado con: {selector}")
                 break
             except:
-                time.sleep(1)
+                continue
         if not campo_dni:
             log_message("SISA: No se encontró campo DNI")
             return resultado
@@ -100,17 +110,17 @@ def consultar_sisa(driver, dni, es_primer_dni):
         time.sleep(0.3)
         campo_dni.send_keys(Keys.RETURN)
         
-        # Esperar resultados (timeout corto)
+        # Esperar que aparezca el DNI en la tabla
         try:
-            WebDriverWait(driver, 6).until(
+            WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located((By.XPATH, f"//td[contains(text(), '{dni}')]"))
             )
-        except:
-            log_message("SISA: No hubo resultados")
+        except TimeoutException:
+            log_message("SISA: No se detectaron resultados")
             return resultado
         
         time.sleep(1)
-        # Extraer datos (simplificado)
+        # Extraer la fila
         try:
             fila = driver.find_element(By.XPATH, f"//td[contains(text(), '{dni}')]/..")
             celdas = fila.find_elements(By.TAG_NAME, "td")
@@ -120,14 +130,14 @@ def consultar_sisa(driver, dni, es_primer_dni):
                 resultado["Sexo"] = celdas[2].text.strip()
                 resultado["Cobertura SISA"] = celdas[3].text.strip()
                 resultado["Denominación"] = celdas[4].text.strip()
-                log_message("SISA: Datos OK")
-        except:
-            pass
+                log_message("SISA: Datos extraídos OK")
+        except Exception as e:
+            log_message(f"SISA: Error al extraer datos: {str(e)[:50]}")
     except Exception as e:
         log_message(f"SISA Error: {str(e)[:50]}")
     return resultado
 
-# ==================== FUNCIÓN CODEM CON MAPEO Y PROTECCIÓN ====================
+# ==================== FUNCIÓN CODEM CON MAPEO ====================
 def consultar_codem(driver, dni, es_primer_dni):
     resultado = {"Obra Social CODEM": "", "Familiares": ""}
     try:
@@ -136,7 +146,7 @@ def consultar_codem(driver, dni, es_primer_dni):
             driver.get("https://servicioswww.anses.gob.ar/ooss2/")
             time.sleep(2)
             
-            # MAPEO: buscar campo DNI (con timeout)
+            # MAPEO: buscar campo DNI
             log_message("🔍 Buscando campo DNI...")
             campo_dni = None
             selectores_prueba = [
@@ -148,10 +158,7 @@ def consultar_codem(driver, dni, es_primer_dni):
             ]
             for by, selector in selectores_prueba:
                 try:
-                    campo_dni = WebDriverWait(driver, 3).until(
-                        EC.presence_of_element_located((by, selector))
-                    )
-                    # Guardar selector
+                    campo_dni = WebDriverWait(driver, 3).until(EC.presence_of_element_located((by, selector)))
                     st.session_state.codem_selector_dni = (by, selector)
                     log_message(f"✅ Campo DNI encontrado con: {selector}")
                     break
@@ -165,8 +172,9 @@ def consultar_codem(driver, dni, es_primer_dni):
                     if inp.is_displayed():
                         campo_dni = inp
                         # Generar XPath simple
-                        xpath = f"//input[@name='{inp.get_attribute('name')}']" if inp.get_attribute('name') else None
-                        if xpath:
+                        name = inp.get_attribute('name')
+                        if name:
+                            xpath = f"//input[@name='{name}']"
                             st.session_state.codem_selector_dni = (By.XPATH, xpath)
                         log_message("✅ Campo DNI encontrado (primer input)")
                         break
@@ -186,9 +194,7 @@ def consultar_codem(driver, dni, es_primer_dni):
             ]
             for by, selector in selectores_btn:
                 try:
-                    boton = WebDriverWait(driver, 3).until(
-                        EC.element_to_be_clickable((by, selector))
-                    )
+                    boton = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((by, selector)))
                     st.session_state.codem_selector_btn = (by, selector)
                     log_message(f"✅ Botón encontrado con: {selector}")
                     break
@@ -201,10 +207,9 @@ def consultar_codem(driver, dni, es_primer_dni):
         
         # --- Usar selectores aprendidos ---
         if not st.session_state.codem_selector_dni or not st.session_state.codem_selector_btn:
-            log_message("CODEM: No hay selectores guardados, abortando")
+            log_message("CODEM: No hay selectores guardados")
             return resultado
         
-        # Re-localizar elementos (pueden haberse vuelto obsoletos)
         try:
             campo_dni = driver.find_element(*st.session_state.codem_selector_dni)
         except:
@@ -224,16 +229,13 @@ def consultar_codem(driver, dni, es_primer_dni):
         
         boton.click()
         
-        # Esperar resultado (máx 6 segundos)
+        # Esperar resultado
         try:
-            WebDriverWait(driver, 6).until(
-                EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_lblObraSocial"))
-            )
+            WebDriverWait(driver, 6).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_lblObraSocial")))
         except TimeoutException:
             log_message("CODEM: No apareció resultado")
             return resultado
         
-        # Extraer datos
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         obra = soup.find('span', {'id': 'ContentPlaceHolder1_lblObraSocial'})
         if obra:
@@ -288,13 +290,13 @@ if buscar_btn and dni_input:
         driver_codem.quit()
         
         estado.success("✅ Completado!")
-        # Combinar
+        # Combinar resultados
         combinados = []
         for i, dni in enumerate(lista_dnis):
             fila = {"DNI": dni, **resultados_sisa[i], **resultados_codem[i]}
             combinados.append(fila)
         
-        df = pd.DataFrame(combinaos)
+        df = pd.DataFrame(combinados)
         st.dataframe(df, use_container_width=True, hide_index=True)
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Descargar CSV", csv, "resultados.csv")
