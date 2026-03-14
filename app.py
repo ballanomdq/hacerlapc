@@ -58,13 +58,12 @@ def consultar_dni_selenium(dni):
         # 1. Ir a SISA
         driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
         log_message("Página principal cargada, esperando 8 segundos...")
-        time.sleep(8)  # Aumentamos la espera inicial
+        time.sleep(8)
         
         # 2. Buscar el módulo PUCO
         puco_encontrado = False
         for intento in range(3):
             try:
-                # Intentar con texto "PUCO"
                 puco = WebDriverWait(driver, 15).until(
                     EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
                 )
@@ -76,7 +75,6 @@ def consultar_dni_selenium(dni):
                 break
             except:
                 try:
-                    # Intentar con texto alternativo
                     puco = driver.find_element(By.XPATH, "//*[contains(text(), 'consulta de cobertura')]")
                     driver.execute_script("arguments[0].click();", puco)
                     puco_encontrado = True
@@ -90,11 +88,11 @@ def consultar_dni_selenium(dni):
         if not puco_encontrado:
             raise Exception("No se pudo encontrar el módulo PUCO.")
         
-        # 3. Esperar a que cargue el formulario (puede tardar)
+        # 3. Esperar a que cargue el formulario
         log_message("Esperando 5 segundos para que cargue el formulario...")
         time.sleep(5)
         
-        # 4. Buscar campo DNI con selectores más flexibles
+        # 4. Buscar campo DNI
         log_message("Buscando campo DNI...")
         selectores_dni = [
             "//input[contains(@name, 'dni')]",
@@ -130,13 +128,25 @@ def consultar_dni_selenium(dni):
         dni_field.send_keys(str(dni))
         log_message("DNI ingresado.")
         
-        # 5. Buscar botón Buscar
+        # 5. Buscar botón Buscar (VERSIÓN MEJORADA)
         log_message("Buscando botón 'Buscar'...")
+        
+        # Guardar el HTML para depuración
+        html_actual = driver.page_source
+        log_message("HTML actual (primeros 500 caracteres): " + html_actual[:500].replace("\n", " "))
+        
+        # Lista ampliada de selectores
         selectores_boton = [
             "//button[contains(text(), 'Buscar')]",
+            "//button[contains(text(), 'BUSCAR')]",
+            "//button[contains(text(), 'buscar')]",
             "//button[@type='submit']",
             "//input[@type='submit']",
-            "//button[contains(@class, 'buscar')]"
+            "//button[contains(@class, 'btn') and contains(text(), 'Buscar')]",
+            "//button[contains(@class, 'buscar')]",
+            "//*[@role='button' and contains(text(), 'Buscar')]",
+            "//a[contains(@class, 'btn') and contains(text(), 'Buscar')]",
+            "//div[contains(@class, 'button') and contains(text(), 'Buscar')]"
         ]
         
         boton = None
@@ -145,17 +155,45 @@ def consultar_dni_selenium(dni):
                 boton = WebDriverWait(driver, 3).until(
                     EC.element_to_be_clickable((By.XPATH, selector))
                 )
+                log_message(f"Botón encontrado con selector: {selector}")
                 break
             except:
                 continue
         
         if not boton:
+            # Último recurso: buscar cualquier botón visible
+            botones = driver.find_elements(By.TAG_NAME, "button")
+            for btn in botones:
+                if btn.is_displayed():
+                    texto = btn.text.lower()
+                    if "buscar" in texto or "consultar" in texto or "enviar" in texto:
+                        boton = btn
+                        log_message(f"Botón encontrado por texto: {btn.text}")
+                        break
+        
+        if not boton:
+            # Intentar con JavaScript: buscar elementos con texto 'Buscar'
+            script = """
+            var elements = document.querySelectorAll('button, input[type="submit"], a, div[role="button"]');
+            for (var i = 0; i < elements.length; i++) {
+                if (elements[i].textContent.includes('Buscar') || elements[i].value === 'Buscar') {
+                    return elements[i];
+                }
+            }
+            return null;
+            """
+            boton = driver.execute_script(script)
+            if boton:
+                log_message("Botón encontrado mediante JavaScript.")
+        
+        if not boton:
             raise Exception("No se encontró el botón Buscar.")
         
+        # Hacer clic en el botón
         driver.execute_script("arguments[0].click();", boton)
         log_message("Botón Buscar clickeado.")
         
-        # 6. Esperar tabla de resultados
+        # 6. Esperar resultados
         log_message("Esperando resultados...")
         try:
             WebDriverWait(driver, 20).until(
@@ -163,7 +201,6 @@ def consultar_dni_selenium(dni):
             )
             log_message("Tabla de resultados encontrada.")
         except TimeoutException:
-            # Puede que no haya tabla pero sí un mensaje de "sin resultados"
             body_text = driver.find_element(By.TAG_NAME, "body").text
             if "no se encontraron" in body_text.lower() or "sin resultados" in body_text.lower():
                 resultado["Estado"] = "❌ No encontrado"
@@ -191,7 +228,7 @@ def consultar_dni_selenium(dni):
         resultado["Estado"] = f"Error: {error_msg}"
         log_message(f"❌ Error: {error_msg}")
         
-        # Capturar pantalla para diagnóstico
+        # Capturar pantalla
         try:
             screenshot = driver.get_screenshot_as_png()
             st.image(screenshot, caption=f"Error en DNI {dni}", width=400)
@@ -203,7 +240,7 @@ def consultar_dni_selenium(dni):
     
     return resultado
 
-# --- Lógica principal (corregida) ---
+# --- Lógica principal ---
 if buscar_btn and dni_input:
     lista_dnis = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if not lista_dnis:
