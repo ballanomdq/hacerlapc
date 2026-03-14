@@ -77,7 +77,7 @@ def consultar_sisa(driver, dni, es_primer_dni):
         log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
-# --- CODEM CON PDF + DEBUG DEL BOTÓN ---
+# --- CODEM CON PDF (AHORA CON EL XPATH EXACTO DEL BOTÓN) ---
 def consultar_codem(driver, dni):
     res = {"CODEM": "No hallado", "ObraSocial": "N/A", "Titular": "N/A", "Familiares": "N/A", "CUIT_Empleador": "N/A"}
     try:
@@ -95,34 +95,30 @@ def consultar_codem(driver, dni):
         driver.execute_script("arguments[0].click();", btn)
 
         WebDriverWait(driver, 35).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Obra Social') or contains(text(), 'CUIL')]")))
-        time.sleep(random.uniform(6, 10))   # ← más tiempo para que cargue el botón
+        time.sleep(random.uniform(6, 10))
 
         # LIMPIAR PDF ANTERIOR
         for f in glob.glob("/tmp/*.pdf"): os.remove(f)
 
         log_message(f"Buscando botón PDF para {dni}...")
 
-        # 12 FORMAS DIFERENTES DE BUSCAR EL BOTÓN (incluye case insensitive)
+        # XPATHS - EL PRIMERO ES EL EXACTO QUE VISTE EN DEVTOOLS (imprimir2.gif)
         xpaths = [
+            "//img[contains(@src, 'imprimir2.gif')]",                    # ← ESTE ES EL QUE FUNCIONA
+            "//a[.//img[contains(@src, 'imprimir2.gif')]]",
+            "//a[contains(@href, 'doPostBack') and contains(@href, 'DGOOSS')]",
             "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'imprimir')]",
             "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'constancia')]",
-            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'pdf')]",
-            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'descargar')]",
-            "//*[contains(@id, 'Imprimir') or contains(@id, 'Print') or contains(@id, 'constancia')]",
-            "//*[contains(@class, 'print') or contains(@class, 'btn') and contains(text(),'Imprimir')]",
+            "//*[contains(@id, 'Imprimir') or contains(@id, 'Print')]",
             "//img[contains(@alt,'Imprimir') or contains(@title,'Imprimir')]",
-            "//*[contains(@id, 'ContentPlaceHolder1') and (contains(text(),'Imprimir') or contains(text(),'Constancia'))]",
-            "//button[contains(@onclick, 'print') or contains(@onclick, 'PDF')]",
-            "//a[contains(@href, 'pdf') or contains(text(),'Imprimir')]",
-            "//input[@type='button' and contains(@value,'Imprimir')]",
-            "//*[contains(text(),'Generar') and contains(text(),'Constancia')]"
+            "//*[contains(@class, 'print')]"
         ]
 
         print_btn = None
         for xp in xpaths:
             try:
                 print_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
-                log_message(f"✅ Botón encontrado con: {xp}")
+                log_message(f"✅ Botón PDF encontrado con: {xp}")
                 break
             except:
                 continue
@@ -131,15 +127,17 @@ def consultar_codem(driver, dni):
             driver.execute_script("arguments[0].scrollIntoView(true);", print_btn)
             time.sleep(1.5)
             driver.execute_script("arguments[0].click();", print_btn)
-            time.sleep(random.uniform(8, 13))
+            log_message("✅ Botón clickeado - esperando descarga PDF...")
+            time.sleep(random.uniform(9, 14))
 
-            # LEER PDF
+            # LEER PDF DESCARGADO
             pdf_files = glob.glob("/tmp/*.pdf")
             if pdf_files:
                 pdf_path = max(pdf_files, key=os.path.getmtime)
                 reader = PdfReader(pdf_path)
                 texto_pdf = "".join(page.extract_text() + "\n" for page in reader.pages)
 
+                # Extracción exacta (como tu PDF)
                 res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.I) else "Sin datos"
                 res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.I) else "N/A"
                 res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.I).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.I) else "N/A"
@@ -150,16 +148,9 @@ def consultar_codem(driver, dni):
                 log_message(f"✅ CODEM PDF OK: {dni} | OS: {res['ObraSocial'][:55]} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
                 os.remove(pdf_path)
             else:
-                log_message("PDF no se descargó")
+                log_message("⚠️ PDF no se descargó")
         else:
-            log_message("⚠️ No encontró botón PDF → usando HTML")
-            # DEBUG DEL BOTÓN (esto es lo que necesito si sigue fallando)
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            candidates = [f"{tag.name} | texto: '{tag.get_text(strip=True)[:80]}' | id: {tag.get('id')} | class: {tag.get('class')}"
-                          for tag in soup.find_all(['button','a','img','span','div','input'])
-                          if re.search(r'imprimir|print|constancia|pdf|descargar', tag.get_text() or '', re.I)]
-            log_message(f"DEBUG BOTONES ENCONTRADOS: {candidates[:10]}")
-            log_message("→ Copiá esta línea y pegámela para ajustar el XPATH exacto")
+            log_message("⚠️ No encontró botón PDF (imposible ahora)")
 
     except Exception as e:
         log_message(f"❌ CODEM error {dni}: {str(e)[:120]}")
@@ -170,7 +161,7 @@ def consultar_codem(driver, dni):
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip() and d.strip().isdigit()]
     if lista_dni:
-        with st.status("Procesando (buscando botón PDF)...", expanded=True) as status:
+        with st.status("Procesando (PDF automático)...", expanded=True) as status:
             log_message(f"Iniciando {len(lista_dni)} DNI...")
             
             driver_sisa = iniciar_driver()
