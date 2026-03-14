@@ -28,7 +28,7 @@ log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# --- DRIVER con descarga PDF ---
+# --- DRIVER ---
 def iniciar_driver():
     options = Options()
     options.add_argument("--headless=new")
@@ -40,19 +40,15 @@ def iniciar_driver():
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
 
-    prefs = {
-        "download.default_directory": "/tmp",
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True
-    }
+    prefs = {"download.default_directory": "/tmp", "download.prompt_for_download": False,
+             "download.directory_upgrade": True, "plugins.always_open_pdf_externally": True}
     options.add_experimental_option("prefs", prefs)
 
     driver = webdriver.Chrome(options=options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# --- SISA (igual que antes) ---
+# --- SISA (sin cambios) ---
 def consultar_sisa(driver, dni, es_primer_dni):
     res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
     try:
@@ -81,15 +77,9 @@ def consultar_sisa(driver, dni, es_primer_dni):
         log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
-# --- CODEM CON PDF (¡esto soluciona todo!) ---
+# --- CODEM CON PDF + DEBUG DEL BOTÓN ---
 def consultar_codem(driver, dni):
-    res = {
-        "CODEM": "No hallado",
-        "ObraSocial": "N/A",
-        "Titular": "N/A",
-        "Familiares": "N/A",
-        "CUIT_Empleador": "N/A"
-    }
+    res = {"CODEM": "No hallado", "ObraSocial": "N/A", "Titular": "N/A", "Familiares": "N/A", "CUIT_Empleador": "N/A"}
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
         time.sleep(random.uniform(10, 16))
@@ -104,76 +94,83 @@ def consultar_codem(driver, dni):
         btn = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "ContentPlaceHolder1_Button1")))
         driver.execute_script("arguments[0].click();", btn)
 
-        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Obra Social') or contains(text(), 'CUIL')]")))
-        time.sleep(random.uniform(4, 7))
+        WebDriverWait(driver, 35).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Obra Social') or contains(text(), 'CUIL')]")))
+        time.sleep(random.uniform(6, 10))   # ← más tiempo para que cargue el botón
 
         # LIMPIAR PDF ANTERIOR
-        for f in glob.glob("/tmp/*.pdf"):
-            os.remove(f)
+        for f in glob.glob("/tmp/*.pdf"): os.remove(f)
 
-        # BUSCAR BOTÓN IMPRIMIR CON MUCHOS LOCATORS (esto arregla el error que te dio)
         log_message(f"Buscando botón PDF para {dni}...")
-        print_btn = None
+
+        # 12 FORMAS DIFERENTES DE BUSCAR EL BOTÓN (incluye case insensitive)
         xpaths = [
-            "//button[contains(text(),'Imprimir')]",
-            "//a[contains(text(),'Imprimir')]",
-            "//*[contains(text(),'Imprimir')]",
-            "//button[contains(text(),'Constancia')]",
-            "//*[contains(text(),'Constancia')]",
-            "//button[contains(text(),'PDF')]",
+            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'imprimir')]",
+            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'constancia')]",
+            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'pdf')]",
+            "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'descargar')]",
+            "//*[contains(@id, 'Imprimir') or contains(@id, 'Print') or contains(@id, 'constancia')]",
+            "//*[contains(@class, 'print') or contains(@class, 'btn') and contains(text(),'Imprimir')]",
             "//img[contains(@alt,'Imprimir') or contains(@title,'Imprimir')]",
-            "//*[contains(@class,'print') or contains(@id,'print') or contains(@title,'imprimir')]"
+            "//*[contains(@id, 'ContentPlaceHolder1') and (contains(text(),'Imprimir') or contains(text(),'Constancia'))]",
+            "//button[contains(@onclick, 'print') or contains(@onclick, 'PDF')]",
+            "//a[contains(@href, 'pdf') or contains(text(),'Imprimir')]",
+            "//input[@type='button' and contains(@value,'Imprimir')]",
+            "//*[contains(text(),'Generar') and contains(text(),'Constancia')]"
         ]
+
+        print_btn = None
         for xp in xpaths:
             try:
-                print_btn = WebDriverWait(driver, 6).until(EC.element_to_be_clickable((By.XPATH, xp)))
+                print_btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
+                log_message(f"✅ Botón encontrado con: {xp}")
                 break
             except:
                 continue
 
         if print_btn:
             driver.execute_script("arguments[0].scrollIntoView(true);", print_btn)
-            time.sleep(1)
+            time.sleep(1.5)
             driver.execute_script("arguments[0].click();", print_btn)
-            log_message("✅ Botón Imprimir clickeado")
-            time.sleep(random.uniform(8, 12))
+            time.sleep(random.uniform(8, 13))
+
+            # LEER PDF
+            pdf_files = glob.glob("/tmp/*.pdf")
+            if pdf_files:
+                pdf_path = max(pdf_files, key=os.path.getmtime)
+                reader = PdfReader(pdf_path)
+                texto_pdf = "".join(page.extract_text() + "\n" for page in reader.pages)
+
+                res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.I) else "Sin datos"
+                res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.I) else "N/A"
+                res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.I).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.I) else "N/A"
+                fam = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.I | re.DOTALL)
+                res["Familiares"] = fam.group(1).strip().replace("\n", " | ")[:700] if fam else "Sin familiares a cargo"
+
+                res["CODEM"] = "OK - PDF"
+                log_message(f"✅ CODEM PDF OK: {dni} | OS: {res['ObraSocial'][:55]} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
+                os.remove(pdf_path)
+            else:
+                log_message("PDF no se descargó")
         else:
             log_message("⚠️ No encontró botón PDF → usando HTML")
-
-        # LEER PDF DESCARGADO
-        pdf_files = glob.glob("/tmp/*.pdf")
-        if pdf_files:
-            pdf_path = max(pdf_files, key=os.path.getmtime)
-            reader = PdfReader(pdf_path)
-            texto_pdf = ""
-            for page in reader.pages:
-                texto_pdf += page.extract_text() + "\n"
-
-            # EXTRACCIÓN EXACTA (como tu PDF)
-            res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.IGNORECASE | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.IGNORECASE) else "Sin datos"
-            res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha de Nacimiento|$)', texto_pdf, re.IGNORECASE | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.IGNORECASE) else "N/A"
-            res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.IGNORECASE).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.IGNORECASE) else "N/A"
-            
-            fam_match = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.DOTALL | re.IGNORECASE)
-            res["Familiares"] = fam_match.group(1).strip().replace("\n", " | ")[:700] if fam_match else "Sin familiares a cargo"
-
-            res["CODEM"] = "OK - PDF"
-            log_message(f"✅ CODEM PDF OK: {dni} | OS: {res['ObraSocial'][:50]} | Familiares: SÍ | CUIT: {res['CUIT_Empleador']}")
-            os.remove(pdf_path)
-        else:
-            log_message("No se descargó PDF → fallback HTML")
+            # DEBUG DEL BOTÓN (esto es lo que necesito si sigue fallando)
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            candidates = [f"{tag.name} | texto: '{tag.get_text(strip=True)[:80]}' | id: {tag.get('id')} | class: {tag.get('class')}"
+                          for tag in soup.find_all(['button','a','img','span','div','input'])
+                          if re.search(r'imprimir|print|constancia|pdf|descargar', tag.get_text() or '', re.I)]
+            log_message(f"DEBUG BOTONES ENCONTRADOS: {candidates[:10]}")
+            log_message("→ Copiá esta línea y pegámela para ajustar el XPATH exacto")
 
     except Exception as e:
-        log_message(f"❌ CODEM error {dni}: {str(e)[:100]}")
+        log_message(f"❌ CODEM error {dni}: {str(e)[:120]}")
 
     return res
 
 # --- EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip() and d.strip().isdigit()]
-    
     if lista_dni:
-        with st.status("Procesando con PDF incluido...", expanded=True) as status:
+        with st.status("Procesando (buscando botón PDF)...", expanded=True) as status:
             log_message(f"Iniciando {len(lista_dni)} DNI...")
             
             driver_sisa = iniciar_driver()
