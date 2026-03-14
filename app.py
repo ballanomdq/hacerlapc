@@ -27,6 +27,7 @@ log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
+# --- DRIVER (igual que antes) ---
 def iniciar_driver():
     options = Options()
     options.add_argument("--headless=new")
@@ -46,7 +47,7 @@ def iniciar_driver():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# --- SISA (sin cambios) ---
+# --- SISA ---
 def consultar_sisa(driver, dni, es_primer_dni):
     res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
     try:
@@ -74,7 +75,7 @@ def consultar_sisa(driver, dni, es_primer_dni):
         pass
     return res
 
-# --- CODEM CON FIX DEL NOMBRE (¡esto soluciona el N/A!) ---
+# --- CODEM CON PDF ---
 def consultar_codem(driver, dni):
     res = {"CODEM": "No hallado", "ObraSocial": "N/A", "Titular": "N/A", "Familiares": "N/A", "CUIT_Empleador": "N/A"}
     try:
@@ -106,26 +107,19 @@ def consultar_codem(driver, dni):
             reader = PdfReader(pdf_path)
             texto_pdf = "".join(page.extract_text() + "\n" for page in reader.pages)
 
-            # FIX DEL NOMBRE - regex más fuerte
-            tit_match = re.search(r'Nombre y Apellido:\s*([^\n|]+)', texto_pdf, re.I | re.DOTALL)
-            res["Titular"] = tit_match.group(1).strip() if tit_match else "N/A"
-
-            # Si sigue fallando, mostramos debug
-            if res["Titular"] == "N/A":
-                log_message(f"⚠️ DEBUG NOMBRE FALLÓ para {dni} - primer parte del PDF: {texto_pdf[:400]}...")
-
             res["ObraSocial"] = re.search(r'Denominación:\s*(.+?)(?:Código|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Denominación:', texto_pdf, re.I) else "Sin datos"
+            res["Titular"] = re.search(r'Nombre y Apellido:\s*(.+?)(?:Fecha|$)', texto_pdf, re.I | re.DOTALL).group(1).strip() if re.search(r'Nombre y Apellido:', texto_pdf, re.I) else "N/A"
             res["CUIT_Empleador"] = re.search(r'CUIT Empleador:\s*([\d-]+)', texto_pdf, re.I).group(1).strip() if re.search(r'CUIT Empleador:', texto_pdf, re.I) else "N/A"
             fam = re.search(r'Datos Grupo Familiar y Adherente(.+?)(?:La información|Dirección)', texto_pdf, re.I | re.DOTALL)
             res["Familiares"] = fam.group(1).strip() if fam else "Sin familiares a cargo"
 
             res["CODEM"] = "OK - PDF"
             os.remove(pdf_path)
-    except Exception as e:
-        log_message(f"❌ Error CODEM {dni}: {str(e)[:80]}")
+    except:
+        pass
     return res
 
-# --- EJECUCIÓN (tabla + expanders con nombre completo) ---
+# --- EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip() and d.strip().isdigit()]
     
@@ -146,18 +140,33 @@ if buscar_btn and dni_input:
 
             status.update(label="¡Terminado!", state="complete")
 
-        # TABLA PRINCIPAL
+        # TABLA LIMPIA
         final = []
         for i, d in enumerate(lista_dni):
-            nombre = r_codem[i].get("Titular", "N/A")
+            titular = r_codem[i].get("Titular", "N/A")
             os_name = r_codem[i].get("ObraSocial", "")
             status_ok = "✅ OSECAC Aprobado" if "COMERCIO" in os_name.upper() or "126205" in os_name else "⚠️ Revisar"
-            final.append({"DNI": d, "Titular": nombre, "Estado OSECAC": status_ok})
+            
+            final.append({
+                "DNI": d,
+                "Titular": titular,
+                "Status": status_ok,
+                "Ver": "👁️ Ver completa"
+            })
 
         df = pd.DataFrame(final)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # TABLA PRINCIPAL (limpia y bonita)
+        st.dataframe(
+            df[["DNI", "Titular", "Status"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Status": st.column_config.TextColumn("Estado OSECAC", width="medium")
+            }
+        )
 
-        # EXPANDERS CON NOMBRE COMPLETO
+        # DETALLES EXPANDIBLES CON COLORES (como pediste)
         st.markdown("### 👁️ Consultas Completas")
         for i, row in df.iterrows():
             with st.expander(f"👁️ {row['DNI']} - {row['Titular']}"):
@@ -172,6 +181,9 @@ if buscar_btn and dni_input:
                 
                 st.markdown("**👨‍👩‍👧‍👦 Grupo Familiar**")
                 st.info(r_codem[i]['Familiares'].replace(" | ", "\n\n"))
+                
+                st.markdown("**📋 Datos del Titular**")
+                st.write(f"**Nombre:** {r_codem[i]['Titular']}")
 
         st.download_button("📥 Descargar Planilla Completa", 
                          pd.DataFrame([{"DNI":d, **r_sisa[i], **r_codem[i]} for i,d in enumerate(lista_dni)]).to_csv(index=False).encode('utf-8'),
