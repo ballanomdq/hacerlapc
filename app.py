@@ -3,14 +3,14 @@ import requests
 import re
 import pandas as pd
 import time
+import os
 
-# Configuración de la página para que se vea profesional (según tu estilo minimalista)
-st.set_page_config(page_title="Auditoría OSECAC MDP", page_icon="🕵️")
+st.set_page_config(page_title="Censo MDP", layout="centered")
 
-st.title("🚀 Censo de Beneficiarios - Mar del Plata")
-st.write("Presioná el botón y **no cierres la pestaña** hasta que aparezca el botón de descarga.")
+st.title("🚀 Censo Mar del Plata")
+st.info("Presioná el botón de abajo para iniciar el barrido de beneficiarios.")
 
-# Datos de acceso configurados
+# --- CONFIGURACIÓN DE ACCESO ---
 URL = "http://200.51.42.43/empadronamiento/beneficiarios/emp_benef.asp"
 HEADERS = {
     'User-Agent': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 10.0; WOW64; Trident/7.0)',
@@ -18,50 +18,44 @@ HEADERS = {
     'Cookie': 'ASPSESSIONIDSAADDDQA=EEJPNPNCAMHCFHKELMGFLDAO; Usuario%280%29=rballano; Password=654321'
 }
 
-# 1. BOTÓN DE INICIO
-if st.button("▶️ INICIAR BARRIDO MASIVO"):
+# --- LÓGICA DEL BARRIDO ---
+if st.button("▶️ EMPEZAR BARRIDO"):
     resultados = []
     letras = "ABCDEFGHIJLMNOPRSTVZ"
-    
-    progreso = st.progress(0)
-    estado = st.empty()
+    barra = st.progress(0)
+    texto_estado = st.empty()
     
     for i, letra in enumerate(letras):
-        # Actualización de interfaz para evitar hibernación
-        percent = (i + 1) / len(letras)
-        progreso.progress(percent)
-        estado.write(f"🔎 Buscando letra: **{letra}**...")
+        texto_estado.write(f"🔎 Buscando letra: **{letra}**...")
+        barra.progress((i + 1) / len(letras))
         
         payload = {'Tableta': '3', 'Nombre': letra, 'localidad': '390', 'TipoObra': 'O'}
-        
         try:
             res = requests.post(URL, headers=HEADERS, data=payload, timeout=20)
             matches = re.findall(r"Benef\(1,(\d+),'(.*?)'\);", res.text)
-            
             for dni, nombre in matches:
                 resultados.append({'DNI': dni, 'Nombre': nombre})
-            
-            time.sleep(1.2) # Pausa estratégica
-        except Exception as e:
-            st.error(f"Error en letra {letra}: {e}")
+            time.sleep(1.2)
+        except:
+            st.error(f"Error en letra {letra}")
 
     if resultados:
         df = pd.DataFrame(resultados)
-        # Guardamos el archivo físicamente en el servidor
-        df.to_excel("CENSO_MDP.xlsx", index=False)
-        st.success(f"✅ ¡FINALIZADO! Se encontraron {len(resultados)} registros.")
+        df.to_excel("CENSO_COMPLETO.xlsx", index=False)
+        st.success(f"✅ ¡TERMINADO! {len(resultados)} encontrados.")
+        st.balloons()
     else:
-        st.warning("No se obtuvieron datos. Verificá la sesión rballano.")
+        st.error("No se capturaron datos. Revisá la sesión.")
 
-# 2. SECCIÓN DE DESCARGA (FUERA DEL IF PARA QUE NO DESAPAREZCA)
-st.divider()
-try:
-    with open("CENSO_MDP.xlsx", "rb") as f:
+# --- SECCIÓN DE DESCARGA (SIEMPRE VISIBLE SI EL ARCHIVO EXISTE) ---
+st.markdown("---")
+if os.path.exists("CENSO_COMPLETO.xlsx"):
+    with open("CENSO_COMPLETO.xlsx", "rb") as f:
         st.download_button(
-            label="⬇️ DESCARGAR EXCEL DEL CENSO",
+            label="⬇️ DESCARGAR EXCEL",
             data=f,
             file_name="Censo_OSECAC_MDP.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-except FileNotFoundError:
-    st.info("El botón de descarga aparecerá aquí apenas termine el proceso.")
+else:
+    st.write("⏳ El botón de descarga aparecerá aquí cuando finalice el barrido.")
