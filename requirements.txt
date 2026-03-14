@@ -1,5 +1,4 @@
-streamlit
-pandas
+undetected-chromedriver
 selenium
-requests
+pandas
 beautifulsoup4
