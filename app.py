@@ -4,12 +4,13 @@ import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 
 st.set_page_config(page_title="HACER LA PC - PUCO", layout="wide")
-st.title("💻 HACER LA PC - Consulta de Obra Social por DNI")
+st.title("💻 HACER LA PC - Consulta de Datos PUCO (SISA)")
 
 # --- Estilo ---
 st.markdown("""
@@ -50,7 +51,16 @@ def iniciar_driver():
 
 def consultar_dni_selenium(dni):
     driver = iniciar_driver()
-    resultado = {"DNI": dni, "Obra Social": "Error", "Estado": "❌ Fallo"}
+    # Diccionario con todas las columnas que esperamos
+    resultado = {
+        "DNI": dni,
+        "TipoDoc": "",
+        "NroDoc": "",
+        "Sexo": "",
+        "Cobertura Social": "",
+        "Denominación": "",
+        "Estado": "❌ Fallo"
+    }
     
     try:
         log_message(f"Iniciando consulta para DNI {dni}")
@@ -60,7 +70,7 @@ def consultar_dni_selenium(dni):
         log_message("Página principal cargada, esperando 8 segundos...")
         time.sleep(8)
         
-        # 2. Buscar el módulo PUCO
+        # 2. Buscar el módulo PUCO (con reintentos)
         puco_encontrado = False
         for intento in range(3):
             try:
@@ -106,7 +116,7 @@ def consultar_dni_selenium(dni):
                 dni_field = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.XPATH, selector))
                 )
-                log_message(f"Campo DNI encontrado.")
+                log_message("Campo DNI encontrado.")
                 break
             except:
                 continue
@@ -122,105 +132,76 @@ def consultar_dni_selenium(dni):
         if not dni_field:
             raise Exception("No se encontró el campo DNI.")
         
+        # 5. Ingresar DNI y enviar ENTER (sin botón)
         dni_field.clear()
         dni_field.send_keys(str(dni))
-        log_message("DNI ingresado.")
-        
-        # 5. Buscar botón Buscar
-        log_message("Buscando botón 'Buscar'...")
-        selectores_boton = [
-            "//button[contains(text(), 'Buscar')]",
-            "//button[@type='submit']",
-            "//input[@type='submit']"
-        ]
-        
-        boton = None
-        for selector in selectores_boton:
-            try:
-                boton = WebDriverWait(driver, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, selector))
-                )
-                log_message(f"Botón encontrado.")
-                break
-            except:
-                continue
-        
-        if not boton:
-            botones = driver.find_elements(By.TAG_NAME, "button")
-            for btn in botones:
-                if btn.is_displayed() and "buscar" in btn.text.lower():
-                    boton = btn
-                    log_message("Botón encontrado por texto.")
-                    break
-        
-        if not boton:
-            raise Exception("No se encontró el botón Buscar.")
-        
-        driver.execute_script("arguments[0].click();", boton)
-        log_message("Botón Buscar clickeado.")
+        log_message("DNI ingresado, enviando ENTER...")
+        dni_field.send_keys(Keys.RETURN)
         
         # 6. Esperar a que aparezca el DNI en alguna celda (resultados)
         log_message("Esperando resultados...")
-        time.sleep(5)  # Tiempo adicional para que cargue la tabla
+        time.sleep(5)  # Tiempo para que cargue la tabla
         
-        # Buscar todas las tablas
+        # 7. Buscar la tabla que contenga el DNI en una celda
         tablas = driver.find_elements(By.XPATH, "//table")
         log_message(f"Se encontraron {len(tablas)} tablas.")
         
         tabla_resultados = None
         fila_dni = None
         
-        # Buscar una tabla que tenga una celda con el DNI exacto (no como parte de un texto largo)
         for tabla in tablas:
-            # Buscar celdas que contengan el DNI y cuyo texto sea corto (para evitar frases)
-            celdas_dni = tabla.find_elements(By.XPATH, f".//td[contains(text(), '{dni}') and string-length(text()) < 15]")
-            if celdas_dni:
-                # Tomamos la primera celda que cumpla
-                celda_dni = celdas_dni[0]
-                fila_dni = celda_dni.find_element(By.XPATH, "..")  # la fila
-                tabla_resultados = tabla
-                log_message("Tabla de resultados identificada por celda con DNI.")
+            # Buscar celdas que contengan el DNI exacto (como número, no como parte de texto largo)
+            celdas_dni = tabla.find_elements(By.XPATH, f".//td[contains(text(), '{dni}')]")
+            for celda in celdas_dni:
+                # Verificar que el texto de la celda sea solo el DNI (sin caracteres extras)
+                texto_celda = celda.text.strip()
+                if texto_celda == str(dni) or texto_celda.isdigit() and len(texto_celda) in (7,8):
+                    fila_dni = celda.find_element(By.XPATH, "..")
+                    tabla_resultados = tabla
+                    log_message("Fila con DNI encontrada.")
+                    break
+            if fila_dni:
                 break
         
-        if not tabla_resultados:
-            # Fallback: buscar cualquier tabla con al menos 2 filas y 2 columnas
+        if not fila_dni:
+            # Fallback: buscar la primera fila con al menos 5 columnas
             for tabla in tablas:
                 filas = tabla.find_elements(By.XPATH, ".//tr")
-                if len(filas) >= 2:
-                    primera_fila = filas[0]
-                    celdas = primera_fila.find_elements(By.TAG_NAME, "td")
-                    if len(celdas) >= 2:
+                for fila in filas:
+                    celdas = fila.find_elements(By.TAG_NAME, "td")
+                    if len(celdas) >= 5:
+                        fila_dni = fila
                         tabla_resultados = tabla
-                        fila_dni = filas[1]  # asumimos que la segunda fila tiene datos
-                        log_message("Usando primera tabla con múltiples filas como fallback.")
+                        log_message("Fila de datos encontrada (fallback).")
                         break
-        
-        if not tabla_resultados:
-            raise Exception("No se encontró ninguna tabla de resultados.")
-        
-        # Extraer datos de la fila que contiene el DNI (o la fila asignada)
-        if not fila_dni:
-            # Si no tenemos una fila específica, tomar la primera fila con datos
-            filas = tabla_resultados.find_elements(By.XPATH, ".//tr")
-            for fila in filas:
-                celdas = fila.find_elements(By.TAG_NAME, "td")
-                if len(celdas) >= 2:
-                    fila_dni = fila
+                if fila_dni:
                     break
         
-        if fila_dni:
-            celdas = fila_dni.find_elements(By.TAG_NAME, "td")
-            if len(celdas) >= 2:
-                obra_social = celdas[1].text.strip()  # asumimos que la obra social está en la segunda columna
-                if not obra_social and len(celdas) >= 3:
-                    obra_social = celdas[2].text.strip()  # a veces puede estar en la tercera
-                resultado = {"DNI": dni, "Obra Social": obra_social, "Estado": "✅ OK"}
-                log_message(f"Obra social obtenida: {obra_social}")
-            else:
-                resultado["Estado"] = "⚠️ Pocas columnas en la tabla"
-        else:
-            resultado["Estado"] = "❌ No se encontró fila con datos"
-            
+        if not fila_dni:
+            raise Exception("No se encontró ninguna fila con datos.")
+        
+        # 8. Extraer todas las celdas de la fila
+        celdas = fila_dni.find_elements(By.TAG_NAME, "td")
+        num_celdas = len(celdas)
+        log_message(f"La fila tiene {num_celdas} celdas.")
+        
+        # Mapeo según el orden observado (puede variar, pero lo ajustamos)
+        # Asumimos que las columnas son: TipoDoc, NroDoc, Sexo, Cobertura Social, Denominación
+        # Si hay más columnas, las ignoramos, pero al menos tomamos las primeras 5
+        if num_celdas >= 1:
+            resultado["TipoDoc"] = celdas[0].text.strip()
+        if num_celdas >= 2:
+            resultado["NroDoc"] = celdas[1].text.strip()
+        if num_celdas >= 3:
+            resultado["Sexo"] = celdas[2].text.strip()
+        if num_celdas >= 4:
+            resultado["Cobertura Social"] = celdas[3].text.strip()
+        if num_celdas >= 5:
+            resultado["Denominación"] = celdas[4].text.strip()
+        
+        resultado["Estado"] = "✅ OK"
+        log_message(f"Datos extraídos: {resultado}")
+        
     except Exception as e:
         error_msg = str(e)[:100]
         resultado["Estado"] = f"Error: {error_msg}"
