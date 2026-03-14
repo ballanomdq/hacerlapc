@@ -15,20 +15,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
-# ---------------- CONFIG ----------------
+# ---------- CONFIG ----------
 
 st.set_page_config(
-    page_title="HACER LA PC PRO",
+    page_title="HACER LA PC",
     layout="wide"
 )
 
-st.title("💻 HACER LA PC PRO")
+st.title("💻 HACER LA PC")
 
 
 with st.container():
 
     dni_input = st.text_area(
-        "DNI (uno por línea)",
+        "DNI",
         height=150
     )
 
@@ -51,7 +51,7 @@ def log_message(msg):
     )
 
 
-# ---------------- DRIVER ----------------
+# ---------- DRIVER ----------
 
 def iniciar_driver():
 
@@ -62,10 +62,23 @@ def iniciar_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
 
+    options.add_argument(
+        "user-agent=Mozilla/5.0"
+    )
+
+    options.add_experimental_option(
+        "excludeSwitches",
+        ["enable-automation"]
+    )
+
+    options.add_experimental_option(
+        "useAutomationExtension",
+        False
+    )
+
     prefs = {
         "download.default_directory": "/tmp",
         "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
         "plugins.always_open_pdf_externally": True
     }
 
@@ -85,7 +98,7 @@ def iniciar_driver():
     return driver
 
 
-# ---------------- TMP ----------------
+# ---------- LIMPIAR TMP ----------
 
 def limpiar_tmp():
 
@@ -103,7 +116,7 @@ def limpiar_tmp():
         pass
 
 
-# ---------------- PDF ----------------
+# ---------- LEER PDF ----------
 
 def leer_pdf():
 
@@ -150,7 +163,7 @@ def leer_pdf():
     return datos
 
 
-# ---------------- SISA ----------------
+# ---------- SISA ----------
 
 def consultar_sisa(driver, dni, first):
 
@@ -167,7 +180,7 @@ def consultar_sisa(driver, dni, first):
                 "https://sisa.msal.gov.ar/sisa/#sisa"
             )
 
-            time.sleep(6)
+            time.sleep(5)
 
             puco = WebDriverWait(
                 driver,
@@ -207,7 +220,7 @@ def consultar_sisa(driver, dni, first):
 
         WebDriverWait(
             driver,
-            12
+            10
         ).until(
             EC.presence_of_element_located(
                 (By.XPATH, target)
@@ -229,20 +242,16 @@ def consultar_sisa(driver, dni, first):
             res["SISA"] = cols[3].text
             res["OS_SISA"] = cols[4].text
 
-        log_message(
-            f"✅ SISA {dni}"
-        )
+        log_message(f"✅ SISA {dni}")
 
     except:
 
-        log_message(
-            f"⚠ SISA {dni}"
-        )
+        log_message(f"⚠ SISA {dni}")
 
     return res
 
 
-# ---------------- CODEM ----------------
+# ---------- CODEM ----------
 
 def consultar_codem(driver, dni):
 
@@ -260,23 +269,37 @@ def consultar_codem(driver, dni):
             "https://servicioswww.anses.gob.ar/ooss2/"
         )
 
-        time.sleep(10)
+        time.sleep(random.uniform(9, 12))
 
-        campo = driver.find_element(
-            By.ID,
-            "ContentPlaceHolder1_txtDoc"
+        campo = WebDriverWait(
+            driver,
+            20
+        ).until(
+            EC.presence_of_element_located(
+                (By.ID, "ContentPlaceHolder1_txtDoc")
+            )
         )
 
         campo.clear()
 
-        campo.send_keys(str(dni))
+        for c in str(dni):
+
+            campo.send_keys(c)
+
+            time.sleep(
+                random.uniform(0.2, 0.4)
+            )
+
+        time.sleep(2)
+
+        btn = driver.find_element(
+            By.ID,
+            "ContentPlaceHolder1_Button1"
+        )
 
         driver.execute_script(
             "arguments[0].click();",
-            driver.find_element(
-                By.ID,
-                "ContentPlaceHolder1_Button1"
-            )
+            btn
         )
 
         time.sleep(5)
@@ -292,16 +315,18 @@ def consultar_codem(driver, dni):
 
             res["CODEM"] = "OK"
 
+        # ---- PDF ----
+
         try:
 
-            btn = driver.find_element(
+            btn_print = driver.find_element(
                 By.ID,
                 "ContentPlaceHolder1_ibtnImprimir"
             )
 
             driver.execute_script(
                 "arguments[0].click();",
-                btn
+                btn_print
             )
 
             time.sleep(6)
@@ -313,20 +338,16 @@ def consultar_codem(driver, dni):
         except:
             pass
 
-        log_message(
-            f"✅ CODEM {dni}"
-        )
+        log_message(f"✅ CODEM {dni}")
 
     except:
 
-        log_message(
-            f"❌ CODEM {dni}"
-        )
+        log_message(f"❌ CODEM {dni}")
 
     return res
 
 
-# ---------------- RUN ----------------
+# ---------- RUN ----------
 
 if buscar_btn and dni_input:
 
@@ -338,37 +359,32 @@ if buscar_btn and dni_input:
 
     if lista:
 
-        with st.status(
-            "Procesando",
-            expanded=True
-        ):
+        d1 = iniciar_driver()
 
-            d1 = iniciar_driver()
+        r1 = [
+            consultar_sisa(
+                d1,
+                d,
+                i == 0
+            )
+            for i, d in enumerate(lista)
+        ]
 
-            r1 = [
-                consultar_sisa(
-                    d1,
-                    d,
-                    i == 0
-                )
-                for i, d in enumerate(lista)
-            ]
+        d1.quit()
 
-            d1.quit()
+        time.sleep(5)
 
-            time.sleep(5)
+        d2 = iniciar_driver()
 
-            d2 = iniciar_driver()
+        r2 = [
+            consultar_codem(
+                d2,
+                d
+            )
+            for d in lista
+        ]
 
-            r2 = [
-                consultar_codem(
-                    d2,
-                    d
-                )
-                for d in lista
-            ]
-
-            d2.quit()
+        d2.quit()
 
         final = []
 
