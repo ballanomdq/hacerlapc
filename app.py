@@ -5,67 +5,71 @@ import pandas as pd
 import time
 import os
 
-# 1. Configuración de la interfaz (Estilo limpio)
-st.set_page_config(page_title="Censo OSECAC MDP", page_icon="🕵️")
+# Configuración profesional de la página
+st.set_page_config(page_title="Censo OSECAC MDP", page_icon="🕵️", layout="centered")
 
 st.title("🚀 Censo de Beneficiarios - Mar del Plata")
-st.write("Estado: **Conexión establecida con sesión Miramar**")
+st.markdown("---")
+st.info("Estado: **Sesión Chrome Miramar Detectada**. Presioná el botón para iniciar.")
 
-# 2. El botón de INICIO
-if st.button("▶️ INICIAR BARRIDO AHORA"):
+# --- BOTÓN DE INICIO ---
+if st.button("▶️ INICIAR BARRIDO MASIVO"):
     resultados = []
     letras = "ABCDEFGHIJLMNOPRSTVZ"
     
-    # Barra de progreso y texto de estado
+    # Barra de progreso y contenedor de estado
     barra = st.progress(0)
     estado = st.empty()
     
-    # DATOS DE ACCESO (Actualizados con tu captura)
+    # DATOS DE ACCESO (Limpiados de tu cadena de texto)
     URL = "http://200.51.42.43/empadronamiento/beneficiarios/emp_benef.asp"
     HEADERS = {
-        'User-Agent': 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 10.0; WOW64; Trident/7.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Cookie': 'ASPSESSIONIDSAABAAQD=JLLLNINCNCKMKPODPKJKNJMO; Usuario%280%29=rballano; Password=654321'
+        'Cookie': 'ASPSESSIONIDSCBDBBSA=CFBDFNOCNMKLGGPBMGEAKJPM; Usuario%280%29=rballano; Password=654321; Delegacion%280%29=MIRAMAR%28BA%29'
     }
 
+    # Iniciamos el recorrido letra por letra
     for i, letra in enumerate(letras):
-        # Actualizamos la interfaz
         progreso_actual = (i + 1) / len(letras)
         barra.progress(progreso_actual)
-        estado.write(f"🔎 Buscando letra: **{letra}**...")
+        estado.write(f"🔎 Procesando letra: **{letra}**...")
         
+        # Localidad 390 = Mar del Plata
         payload = {'Tableta': '3', 'Nombre': letra, 'localidad': '390', 'TipoObra': 'O'}
         
         try:
-            res = requests.post(URL, headers=HEADERS, data=payload, timeout=20)
-            # Buscamos DNI y Nombre en el código de la página
+            res = requests.post(URL, headers=HEADERS, data=payload, timeout=25)
+            # Extraer DNI y Nombre con Regex
             matches = re.findall(r"Benef\(1,(\d+),'(.*?)'\);", res.text)
+            
             for dni, nombre in matches:
                 resultados.append({'DNI': dni, 'Nombre': nombre})
             
-            # Espera de 1.2 segundos para que no nos bloqueen
-            time.sleep(1.2) 
+            # Pausa de seguridad para no ser bloqueados
+            time.sleep(1.5)
+            
         except Exception as e:
             st.error(f"Error en letra {letra}: {e}")
 
     if resultados:
-        # Guardamos el Excel en el servidor
+        # Generar el archivo Excel
         df = pd.DataFrame(resultados)
-        df.to_excel("CENSO_FINAL_MDP.xlsx", index=False)
-        st.success(f"✅ ¡TERMINADO! Se encontraron {len(resultados)} beneficiarios.")
+        df.to_excel("CENSO_MDP_COMPLETO.xlsx", index=False)
+        st.success(f"✅ ¡PROCESO FINALIZADO! Se encontraron {len(resultados)} beneficiarios.")
         st.balloons()
     else:
-        st.error("No se capturaron datos. Es posible que la sesión haya expirado de nuevo.")
+        st.error("No se capturaron datos. Asegurate de que la pestaña de OSECAC en Chrome siga abierta.")
 
-# 3. SECCIÓN DE DESCARGA (Siempre visible si el archivo está listo)
+# --- SECCIÓN DE DESCARGA ---
 st.divider()
-if os.path.exists("CENSO_FINAL_MDP.xlsx"):
-    with open("CENSO_FINAL_MDP.xlsx", "rb") as f:
+if os.path.exists("CENSO_MDP_COMPLETO.xlsx"):
+    with open("CENSO_MDP_COMPLETO.xlsx", "rb") as f:
         st.download_button(
-            label="⬇️ DESCARGAR EXCEL COMPLETO",
+            label="⬇️ DESCARGAR PADRÓN EN EXCEL",
             data=f,
             file_name="Censo_OSECAC_MDP.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 else:
-    st.info("El botón de descarga aparecerá aquí abajo cuando el proceso termine.")
+    st.write("⏳ El botón de descarga aparecerá aquí apenas termine el proceso.")
