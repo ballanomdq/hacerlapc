@@ -10,32 +10,37 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="HACER LA PC - Estable", layout="wide")
 st.title("💻 HACER LA PC - SISA + CODEM")
 
+# Definimos la interfaz PRIMERO para que las variables existan
+with st.container():
+    st.subheader("📋 Ingreso de Datos")
+    dni_input = st.text_area("Escribí los DNI (uno por línea):", height=150)
+    buscar_btn = st.button("🚀 Iniciar Consulta", type="primary")
+
 log_container = st.expander("📋 Log de ejecución", expanded=True)
+
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
+# --- 2. EL MOTOR (DRIVER) ---
 def iniciar_driver():
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # CAMUFLAJE 1: Identidad Real
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    # CAMUFLAJE 2: Desactivar rastreo de automatización
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
     driver = webdriver.Chrome(options=options)
-    # CAMUFLAJE 3: Borrar rastro de WebDriver vía JS
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# ==================== SISA ====================
+# --- 3. FUNCIONES DE BÚSQUEDA ---
 def consultar_sisa(driver, dni, es_primer_dni):
     res = {"SISA": "Sin datos", "Obra Social": "N/A"}
     try:
@@ -62,11 +67,9 @@ def consultar_sisa(driver, dni, es_primer_dni):
         log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
-# ==================== CODEM ====================
 def consultar_codem(driver, dni):
     res = {"CODEM": "No hallado"}
     try:
-        # Navegación con "distracción"
         driver.get("https://www.google.com")
         time.sleep(1)
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
@@ -74,7 +77,6 @@ def consultar_codem(driver, dni):
         
         campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
         
-        # Escritura ultra-lenta para no disparar el captcha
         for char in str(dni):
             campo.send_keys(char)
             time.sleep(random.uniform(0.2, 0.4))
@@ -90,32 +92,32 @@ def consultar_codem(driver, dni):
         res["CODEM"] = os_text.text.strip() if os_text else "Sin datos"
         log_message(f"✅ CODEM OK: {dni}")
     except Exception:
-        if "captcha" in driver.page_source.lower():
-            log_message(f"❌ CODEM: Bloqueado por CAPTCHA en {dni}")
-        else:
-            log_message(f"❌ CODEM: Fallo en {dni}")
+        log_message(f"❌ CODEM: Fallo o Captcha en {dni}")
     return res
 
-# --- PROCESO ---
+# --- 4. PROCESAMIENTO (EL BLOQUE DEL ERROR) ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Consultando...", expanded=True) as status:
-            log_message("Fase SISA...")
+        with st.status("Consultando bases de datos...", expanded=True) as status:
+            log_message("Iniciando Fase SISA...")
             d1 = iniciar_driver()
             r1 = [consultar_sisa(d1, d, i==0) for i, d in enumerate(lista_dni)]
             d1.quit()
             
-            time.sleep(10)
+            time.sleep(5)
             
-            log_message("Fase CODEM...")
+            log_message("Iniciando Fase CODEM...")
             d2 = iniciar_driver()
             r2 = [consultar_codem(d2, d) for d in lista_dni]
             d2.quit()
-            status.update(label="Terminado", state="complete")
+            status.update(label="Consultas completadas", state="complete")
 
-        final = []
+        # Armado de la tabla final
+        final_data = []
         for i, d in enumerate(lista_dni):
-            final.append({"DNI": d, **r1[i], **r2[i]})
+            final_data.append({"DNI": d, **r1[i], **r2[i]})
         
-        st.dataframe(pd.DataFrame(final), use_container_width=True, hide_index=True)
+        df = pd.DataFrame(final_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte.csv")
