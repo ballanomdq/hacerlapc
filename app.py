@@ -10,9 +10,9 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- 1. CONFIGURACIÓN ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="HACER LA PC - OSECAC", layout="wide")
-st.title("🏥 Sistema de Consultas OSECAC MDP")
+st.title("🏥 Sistema Unificado de Consultas - Agencia MDP")
 
 dni_input = st.text_area("📋 Ingresá los DNI (uno por línea):", height=150)
 buscar_btn = st.button("🚀 Iniciar Consulta", type="primary")
@@ -28,9 +28,11 @@ def iniciar_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    return webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(options=options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return driver
 
-# --- 2. FUNCIONES ---
+# --- MOTOR DE BÚSQUEDA ---
 def consultar_sisa(driver, dni, es_primero):
     res = {"NOMBRE": "No hallado", "OS_SISA": "N/A"}
     try:
@@ -47,8 +49,7 @@ def consultar_sisa(driver, dni, es_primero):
         
         target = f"//td[contains(text(), '{dni}')]"
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
-        fila = driver.find_element(By.XPATH, f"{target}/..")
-        cols = fila.find_elements(By.TAG_NAME, "td")
+        cols = driver.find_element(By.XPATH, f"{target}/..").find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
             res = {"NOMBRE": cols[3].text.strip(), "OS_SISA": cols[4].text.strip()}
             log_message(f"✅ SISA OK: {dni}")
@@ -57,53 +58,61 @@ def consultar_sisa(driver, dni, es_primero):
     return res
 
 def consultar_codem(driver, dni):
-    # Usamos una sola columna para que no haya desfasajes visuales
     res = {"INFO_CODEM": "No hallado"}
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
-        time.sleep(random.uniform(9, 11))
+        # Tiempo de espera humano para evitar bloqueos
+        time.sleep(random.uniform(10, 12))
         
         input_doc = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
+        input_doc.clear()
         for num in str(dni): 
             input_doc.send_keys(num)
             time.sleep(0.1)
         
-        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "ContentPlaceHolder1_Button1"))
-        time.sleep(8)
+        # Click con JavaScript para mayor efectividad
+        btn = driver.find_element(By.ID, "ContentPlaceHolder1_Button1")
+        driver.execute_script("arguments[0].click();", btn)
+        
+        # Espera extendida para que cargue la tabla de ANSES
+        time.sleep(10)
         
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        tabla = soup.find("table", {"id": "ContentPlaceHolder1_gvGrilla"})
-        if tabla:
+        
+        # Estrategia 1: Buscar la tabla oficial
+        tabla = soup.find("table") 
+        if tabla and "Descripción" in tabla.get_text():
             filas = tabla.find_all("tr")
-            if len(filas) > 1:
-                # Capturamos TODA la fila del CODEM como un solo texto
-                texto_fila = filas[1].get_text(separator=" | ").strip()
-                res["INFO_CODEM"] = texto_fila
-                log_message(f"✅ CODEM OK: {dni}")
-        elif "Obra Social" in driver.page_source:
-             # Backup por si no hay tabla pero hay texto
-             texto_total = soup.get_text()
-             if "Descripción" in texto_total:
-                 res["INFO_CODEM"] = "Datos hallados en pantalla (verificar manual)"
+            for fila in filas:
+                if "O.S." in fila.get_text() or "OBRA SOCIAL" in fila.get_text().upper():
+                    res["INFO_CODEM"] = fila.get_text(separator=" | ").strip()
+                    log_message(f"✅ CODEM OK: {dni}")
+                    return res
+
+        # Estrategia 2: Si no hay tabla, buscar cualquier texto que diga "Obra Social"
+        texto_completo = soup.get_text(separator=" ")
+        if "Obra Social" in texto_total:
+            res["INFO_CODEM"] = "Datos en pantalla (verificar manual)"
+            log_message(f"✅ CODEM Detectado: {dni}")
         else:
-            log_message(f"❌ CODEM: Sin datos para {dni}")
+            log_message(f"❌ CODEM: Sin respuesta para {dni}")
+            
     except:
-        log_message(f"❌ CODEM: Error en {dni}")
+        log_message(f"❌ CODEM: Error técnico en {dni}")
     return res
 
-# --- 3. EJECUCIÓN ---
+# --- EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Procesando informe unificado...", expanded=True) as status:
+        with st.status("Procesando informe...", expanded=True) as status:
             d = iniciar_driver()
             resultados = []
             for i, dni in enumerate(lista_dni):
-                log_message(f"Consultando DNI: {dni}")
                 sisa = consultar_sisa(d, dni, i==0)
+                time.sleep(2)
                 anses = consultar_codem(d, dni)
                 
-                # Armamos la fila
                 fila = {"DNI": dni}
                 fila.update(sisa)
                 fila.update(anses)
@@ -113,8 +122,6 @@ if buscar_btn and dni_input:
             status.update(label="Proceso terminado", state="complete")
 
         df = pd.DataFrame(resultados)
-        
         st.subheader("📊 Reporte Detallado")
         st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac_unificado.csv")
+        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
