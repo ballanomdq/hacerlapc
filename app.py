@@ -135,7 +135,6 @@ def consultar_dni_selenium(dni):
         html_actual = driver.page_source
         log_message("HTML actual (primeros 500 caracteres): " + html_actual[:500].replace("\n", " "))
         
-        # Lista ampliada de selectores
         selectores_boton = [
             "//button[contains(text(), 'Buscar')]",
             "//button[contains(text(), 'BUSCAR')]",
@@ -161,7 +160,7 @@ def consultar_dni_selenium(dni):
                 continue
         
         if not boton:
-            # Último recurso: buscar cualquier botón visible
+            # Buscar cualquier botón visible con texto que contenga "buscar"
             botones = driver.find_elements(By.TAG_NAME, "button")
             for btn in botones:
                 if btn.is_displayed():
@@ -172,7 +171,7 @@ def consultar_dni_selenium(dni):
                         break
         
         if not boton:
-            # Intentar con JavaScript: buscar elementos con texto 'Buscar'
+            # Último recurso: JavaScript
             script = """
             var elements = document.querySelectorAll('button, input[type="submit"], a, div[role="button"]');
             for (var i = 0; i < elements.length; i++) {
@@ -189,7 +188,6 @@ def consultar_dni_selenium(dni):
         if not boton:
             raise Exception("No se encontró el botón Buscar.")
         
-        # Hacer clic en el botón
         driver.execute_script("arguments[0].click();", boton)
         log_message("Botón Buscar clickeado.")
         
@@ -200,6 +198,11 @@ def consultar_dni_selenium(dni):
                 EC.presence_of_element_located((By.XPATH, "//table"))
             )
             log_message("Tabla de resultados encontrada.")
+            
+            # Depuración: mostrar HTML de la tabla
+            tabla_html = driver.find_element(By.XPATH, "//table").get_attribute("outerHTML")
+            log_message(f"HTML de la tabla: {tabla_html[:500]}...")  # Primeros 500 caracteres
+            
         except TimeoutException:
             body_text = driver.find_element(By.TAG_NAME, "body").text
             if "no se encontraron" in body_text.lower() or "sin resultados" in body_text.lower():
@@ -209,19 +212,28 @@ def consultar_dni_selenium(dni):
             else:
                 raise Exception("No apareció la tabla de resultados.")
         
-        # 7. Extraer datos
+        # 7. Extraer datos - buscar en todas las filas hasta encontrar datos válidos
         filas = driver.find_elements(By.XPATH, "//table/tbody/tr")
-        if len(filas) > 0:
-            celdas = filas[0].find_elements(By.TAG_NAME, "td")
+        if not filas:
+            filas = driver.find_elements(By.XPATH, "//table/tr")  # alternativa sin tbody
+        
+        datos_encontrados = False
+        for fila in filas:
+            celdas = fila.find_elements(By.TAG_NAME, "td")
             if len(celdas) >= 2:
-                cobertura = celdas[0].text.strip()
-                beneficiario = celdas[1].text.strip()
-                resultado = {"DNI": dni, "Cobertura": cobertura, "Beneficiario": beneficiario, "Estado": "✅ OK"}
-                log_message(f"Datos extraídos: {cobertura} - {beneficiario}")
-            else:
-                resultado["Estado"] = "⚠️ Sin datos suficientes"
-        else:
-            resultado["Estado"] = "❌ No encontrado"
+                texto_celda0 = celdas[0].text.strip()
+                texto_celda1 = celdas[1].text.strip()
+                if texto_celda0 and texto_celda1:  # ambas celdas con contenido
+                    cobertura = texto_celda0
+                    beneficiario = texto_celda1
+                    resultado = {"DNI": dni, "Cobertura": cobertura, "Beneficiario": beneficiario, "Estado": "✅ OK"}
+                    log_message(f"Datos extraídos: {cobertura} - {beneficiario}")
+                    datos_encontrados = True
+                    break
+        
+        if not datos_encontrados:
+            resultado["Estado"] = "❌ No encontrado (sin datos en tabla)"
+            log_message("No se encontraron datos en la tabla.")
             
     except Exception as e:
         error_msg = str(e)[:100]
