@@ -100,12 +100,15 @@ def extraer_datos_fila(driver, dni):
                 return celdas
     return None
 
-# --- Lógica principal (un solo driver para todos los DNIs) ---
+# --- Lógica principal ---
 if buscar_btn and dni_input:
     lista_dnis = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if not lista_dnis:
         st.warning("Ingresá al menos un DNI.")
     else:
+        # Registrar tiempo total de inicio
+        tiempo_inicio_total = time.time()
+        
         # Iniciar driver una sola vez
         driver = iniciar_driver()
         resultados = []
@@ -115,7 +118,10 @@ if buscar_btn and dni_input:
         primer_dni = True
 
         for i, dni in enumerate(lista_dnis):
+            # Registrar tiempo por DNI
+            tiempo_inicio_dni = time.time()
             status_text.text(f"Consultando DNI {dni}...")
+            
             resultado = {
                 "DNI": dni,
                 "TipoDoc": "",
@@ -123,7 +129,8 @@ if buscar_btn and dni_input:
                 "Sexo": "",
                 "Cobertura Social": "",
                 "Denominación": "",
-                "Estado": "❌ Fallo"
+                "Estado": "❌ Fallo",
+                "Tiempo (s)": 0
             }
             
             try:
@@ -180,6 +187,9 @@ if buscar_btn and dni_input:
                     if "no se encontraron" in body.lower() or "sin resultados" in body.lower():
                         resultado["Estado"] = "❌ No encontrado"
                         log_message("DNI no encontrado.")
+                        # Calcular tiempo y agregar resultado
+                        tiempo_fin_dni = time.time()
+                        resultado["Tiempo (s)"] = round(tiempo_fin_dni - tiempo_inicio_dni, 2)
                         resultados.append(resultado)
                         barra.progress((i + 1) / len(lista_dnis))
                         continue
@@ -221,6 +231,9 @@ if buscar_btn and dni_input:
                 except:
                     campo_dni = None
             
+            # Calcular tiempo y agregar resultado
+            tiempo_fin_dni = time.time()
+            resultado["Tiempo (s)"] = round(tiempo_fin_dni - tiempo_inicio_dni, 2)
             resultados.append(resultado)
             barra.progress((i + 1) / len(lista_dnis))
             
@@ -233,7 +246,16 @@ if buscar_btn and dni_input:
         # Cerrar driver al final
         driver.quit()
         
+        # Calcular tiempo total
+        tiempo_fin_total = time.time()
+        tiempo_total = round(tiempo_fin_total - tiempo_inicio_total, 2)
+        promedio = round(tiempo_total / len(lista_dnis), 2)
+        
         status_text.text("¡Proceso completado!")
+        
+        # Mostrar resumen de tiempos
+        st.success(f"✅ Tiempo total: {tiempo_total}s | Promedio por DNI: {promedio}s")
+        
         df = pd.DataFrame(resultados)
         st.dataframe(df, use_container_width=True, hide_index=True)
         
