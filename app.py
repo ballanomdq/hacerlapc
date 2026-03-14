@@ -48,13 +48,11 @@ def consultar_sisa(driver, dni, es_primer_dni):
         
         campo = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "input")))
         campo.clear()
-        campo.send_keys(str(dni))
-        campo.send_keys(Keys.RETURN)
+        campo.send_keys(str(dni) + Keys.RETURN)
         
         target = f"//td[contains(text(), '{dni}')]"
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
-        fila = driver.find_element(By.XPATH, f"{target}/..")
-        cols = fila.find_elements(By.TAG_NAME, "td")
+        cols = driver.find_element(By.XPATH, f"{target}/..").find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
             res = {"ESTADO_SISA": cols[3].text, "OBRA_SOCIAL_SISA": cols[4].text}
             log_message(f"✅ SISA OK: {dni}")
@@ -68,45 +66,41 @@ def consultar_codem(driver, dni):
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
         time.sleep(random.uniform(9, 11))
         
-        campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
-        for char in str(dni):
-            campo.send_keys(char)
+        input_doc = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
+        for num in str(dni): 
+            input_doc.send_keys(num)
             time.sleep(0.1)
         
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "ContentPlaceHolder1_Button1"))
-        time.sleep(7)
+        time.sleep(8)
         
-        # EXTRACCIÓN MEJORADA
-        source = driver.page_source
-        if "Obra Social" in source:
-            soup = BeautifulSoup(source, "html.parser")
-            celdas = soup.find_all('td')
-            # Buscamos por posición en la tabla de ANSES
-            for i, celda in enumerate(celdas):
-                texto = celda.get_text().strip()
-                if "Descripción" in texto and i + 1 < len(celdas):
-                    res["CODEM_OS"] = celdas[i+6].get_text().strip() # Nombre OS
-                if "Situación" in texto and i + 1 < len(celdas):
-                    res["CODEM_ESTADO"] = celdas[i+6].get_text().strip() # ACTIVO/INACTIVO
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        celdas = [c.get_text().strip() for c in soup.find_all('td')]
+        
+        # BUSQUEDA POR TEXTO (Para que no falle con familiares)
+        if "Descripción" in celdas:
+            idx_desc = celdas.index("Descripción")
+            res["CODEM_OS"] = celdas[idx_desc + 6]
+        if "Situación" in celdas:
+            idx_sit = celdas.index("Situación")
+            res["CODEM_ESTADO"] = celdas[idx_sit + 6]
             
-            log_message(f"✅ CODEM OK: {dni}")
-        else:
-            log_message(f"❌ CODEM: Sin datos para {dni}")
+        log_message(f"✅ CODEM OK: {dni}")
     except:
-        log_message(f"❌ CODEM: Error técnico en {dni}")
+        log_message(f"❌ CODEM: Error en {dni}")
     return res
 
 # --- 4. EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Procesando consulta dual...", expanded=True) as status:
+        with st.status("Consultando bases de datos...", expanded=True) as status:
             log_message("Fase SISA...")
             d1 = iniciar_driver()
             r1 = [consultar_sisa(d1, d, i==0) for i, d in enumerate(lista_dni)]
             d1.quit()
             
-            time.sleep(3)
+            time.sleep(4)
             
             log_message("Fase CODEM (Sigilo)...")
             d2 = iniciar_driver()
@@ -114,17 +108,14 @@ if buscar_btn and dni_input:
             d2.quit()
             status.update(label="Proceso terminado", state="complete")
 
-        # Unimos todo en la tabla final
         final = []
         for i, d in enumerate(lista_dni):
-            # Combinamos DNI + Datos SISA + Datos CODEM
-            fila_final = {"DNI": d}
-            fila_final.update(r1[i])
-            fila_final.update(r2[i])
-            final.append(fila_final)
+            fila = {"DNI": d}
+            fila.update(r1[i])
+            fila.update(r2[i])
+            final.append(fila)
         
         df = pd.DataFrame(final)
         st.subheader("📊 Reporte Unificado de Obra Social")
         st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        st.download_button("📥 Descargar Planilla Excel", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv", "text/csv")
+        st.download_button("📥 Descargar Reporte CSV", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
