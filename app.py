@@ -60,3 +60,11 @@ if st.button('🚀 Iniciar Barrido Masivo'):
             )
     else:
         st.warning("No se encontraron datos. Revisá si la sesión rballano sigue activa.")
+# Esto hace que aparezca el botón para bajar el archivo a tu PC
+with open("CENSO_AUDITORIA_MDP.xlsx", "rb") as file:
+    st.download_button(
+        label="⬇️ DESCARGAR EXCEL DEL CENSO",
+        data=file,
+        file_name="Censo_OSECAC_MDP.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
