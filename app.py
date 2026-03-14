@@ -15,43 +15,25 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 
-# ---------- CONFIG ----------
+# ---------------- UI ----------------
 
-st.set_page_config(
-    page_title="HACER LA PC",
-    layout="wide"
-)
+st.set_page_config(page_title="HACER LA PC", layout="wide")
 
-st.title("💻 HACER LA PC")
+st.title("HACER LA PC")
 
+dni_input = st.text_area("DNI", height=150)
 
-with st.container():
-
-    dni_input = st.text_area(
-        "DNI",
-        height=150
-    )
-
-    buscar_btn = st.button(
-        "INICIAR",
-        type="primary"
-    )
+buscar_btn = st.button("INICIAR")
 
 
-log_container = st.expander(
-    "LOG",
-    expanded=True
-)
+log_container = st.expander("LOG", expanded=True)
 
 
 def log_message(msg):
-
-    log_container.markdown(
-        "- " + msg
-    )
+    log_container.markdown("- " + msg)
 
 
-# ---------- DRIVER ----------
+# ---------------- DRIVER ----------------
 
 def iniciar_driver():
 
@@ -63,7 +45,11 @@ def iniciar_driver():
     options.add_argument("--window-size=1920,1080")
 
     options.add_argument(
-        "user-agent=Mozilla/5.0"
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    )
+
+    options.add_argument(
+        "--disable-blink-features=AutomationControlled"
     )
 
     options.add_experimental_option(
@@ -76,20 +62,7 @@ def iniciar_driver():
         False
     )
 
-    prefs = {
-        "download.default_directory": "/tmp",
-        "download.prompt_for_download": False,
-        "plugins.always_open_pdf_externally": True
-    }
-
-    options.add_experimental_option(
-        "prefs",
-        prefs
-    )
-
-    driver = webdriver.Chrome(
-        options=options
-    )
+    driver = webdriver.Chrome(options=options)
 
     driver.execute_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
@@ -98,32 +71,21 @@ def iniciar_driver():
     return driver
 
 
-# ---------- LIMPIAR TMP ----------
+# ---------------- PDF ----------------
 
 def limpiar_tmp():
 
     try:
-
         for f in os.listdir("/tmp"):
-
             if f.endswith(".pdf"):
-
-                os.remove(
-                    "/tmp/" + f
-                )
-
+                os.remove("/tmp/" + f)
     except:
         pass
 
 
-# ---------- LEER PDF ----------
-
 def leer_pdf():
 
-    datos = {
-        "CUIT": "",
-        "Familiares": ""
-    }
+    data = {"CUIT": "", "Familiares": ""}
 
     try:
 
@@ -133,7 +95,7 @@ def leer_pdf():
         ]
 
         if not files:
-            return datos
+            return data
 
         path = "/tmp/" + files[-1]
 
@@ -144,33 +106,25 @@ def leer_pdf():
             texto = ""
 
             for p in reader.pages:
-
                 texto += p.extract_text()
 
         if "CUIT" in texto:
-
-            datos["CUIT"] = texto.split(
-                "CUIT"
-            )[-1][:15]
+            data["CUIT"] = texto.split("CUIT")[-1][:15]
 
         if "Parentesco" in texto:
-
-            datos["Familiares"] = "SI"
+            data["Familiares"] = "SI"
 
     except:
         pass
 
-    return datos
+    return data
 
 
-# ---------- SISA ----------
+# ---------------- SISA ----------------
 
 def consultar_sisa(driver, dni, first):
 
-    res = {
-        "SISA": "",
-        "OS_SISA": ""
-    }
+    res = {"SISA": "", "OS_SISA": ""}
 
     try:
 
@@ -180,12 +134,9 @@ def consultar_sisa(driver, dni, first):
                 "https://sisa.msal.gov.ar/sisa/#sisa"
             )
 
-            time.sleep(5)
+            time.sleep(6)
 
-            puco = WebDriverWait(
-                driver,
-                15
-            ).until(
+            puco = WebDriverWait(driver, 15).until(
                 EC.element_to_be_clickable(
                     (
                         By.XPATH,
@@ -201,10 +152,7 @@ def consultar_sisa(driver, dni, first):
 
             time.sleep(2)
 
-        campo = WebDriverWait(
-            driver,
-            10
-        ).until(
+        campo = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable(
                 (By.TAG_NAME, "input")
             )
@@ -218,10 +166,7 @@ def consultar_sisa(driver, dni, first):
 
         target = f"//td[contains(text(),'{dni}')]"
 
-        WebDriverWait(
-            driver,
-            10
-        ).until(
+        WebDriverWait(driver, 10).until(
             EC.presence_of_element_located(
                 (By.XPATH, target)
             )
@@ -232,13 +177,9 @@ def consultar_sisa(driver, dni, first):
             f"{target}/.."
         )
 
-        cols = fila.find_elements(
-            By.TAG_NAME,
-            "td"
-        )
+        cols = fila.find_elements(By.TAG_NAME, "td")
 
         if len(cols) >= 5:
-
             res["SISA"] = cols[3].text
             res["OS_SISA"] = cols[4].text
 
@@ -251,7 +192,7 @@ def consultar_sisa(driver, dni, first):
     return res
 
 
-# ---------- CODEM ----------
+# ---------------- CODEM ----------------
 
 def consultar_codem(driver, dni):
 
@@ -271,21 +212,19 @@ def consultar_codem(driver, dni):
 
         time.sleep(random.uniform(9, 12))
 
-        campo = WebDriverWait(
-            driver,
-            20
-        ).until(
+        campo = WebDriverWait(driver, 20).until(
             EC.presence_of_element_located(
-                (By.ID, "ContentPlaceHolder1_txtDoc")
+                (
+                    By.ID,
+                    "ContentPlaceHolder1_txtDoc"
+                )
             )
         )
 
         campo.clear()
 
         for c in str(dni):
-
             campo.send_keys(c)
-
             time.sleep(
                 random.uniform(0.2, 0.4)
             )
@@ -312,10 +251,9 @@ def consultar_codem(driver, dni):
         texto = soup.get_text()
 
         if "Obra Social" in texto:
-
             res["CODEM"] = "OK"
 
-        # ---- PDF ----
+        # ----- imprimir -----
 
         try:
 
@@ -347,7 +285,7 @@ def consultar_codem(driver, dni):
     return res
 
 
-# ---------- RUN ----------
+# ---------------- RUN ----------------
 
 if buscar_btn and dni_input:
 
@@ -357,56 +295,44 @@ if buscar_btn and dni_input:
         if x.strip()
     ]
 
-    if lista:
+    d1 = iniciar_driver()
 
-        d1 = iniciar_driver()
+    r1 = [
+        consultar_sisa(d1, d, i == 0)
+        for i, d in enumerate(lista)
+    ]
 
-        r1 = [
-            consultar_sisa(
-                d1,
-                d,
-                i == 0
-            )
-            for i, d in enumerate(lista)
-        ]
+    d1.quit()
 
-        d1.quit()
+    time.sleep(5)
 
-        time.sleep(5)
+    d2 = iniciar_driver()
 
-        d2 = iniciar_driver()
+    r2 = [
+        consultar_codem(d2, d)
+        for d in lista
+    ]
 
-        r2 = [
-            consultar_codem(
-                d2,
-                d
-            )
-            for d in lista
-        ]
+    d2.quit()
 
-        d2.quit()
+    final = []
 
-        final = []
+    for i, d in enumerate(lista):
 
-        for i, d in enumerate(lista):
-
-            final.append({
+        final.append(
+            {
                 "DNI": d,
                 **r1[i],
-                **r2[i]
-            })
-
-        df = pd.DataFrame(final)
-
-        st.dataframe(
-            df,
-            use_container_width=True
+                **r2[i],
+            }
         )
 
-        st.download_button(
-            "DESCARGAR",
-            df.to_csv(
-                index=False
-            ).encode(),
-            "reporte.csv"
-        )
+    df = pd.DataFrame(final)
+
+    st.dataframe(df)
+
+    st.download_button(
+        "DESCARGAR",
+        df.to_csv(index=False).encode(),
+        "reporte.csv"
+    )
