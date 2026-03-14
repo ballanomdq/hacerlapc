@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import time
 import random
-import re
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -11,31 +10,40 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="HACER LA PC - OSECAC", layout="wide")
-st.title("🏥 Sistema Unificado MDP (SISA + CODEM)")
+st.title("💻 HACER LA PC - Sistema Unificado")
 
-dni_input = st.text_area("📋 Pegá los DNI aquí:", height=150)
-buscar_btn = st.button("🚀 Iniciar Consulta Dual", type="primary")
+with st.container():
+    st.subheader("📋 Ingreso de Datos")
+    dni_input = st.text_area("Escribí los DNI (uno por línea):", height=150)
+    buscar_btn = st.button("🚀 Iniciar Consulta Dual", type="primary")
 
 log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
+# --- 2. EL MOTOR (Mantenemos headless para que funcione en Streamlit Cloud) ---
 def iniciar_driver():
     options = Options()
-    options.add_argument("--headless=new")
+    options.add_argument("--headless=new") # Necesario para la web
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    return webdriver.Chrome(options=options)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    driver = webdriver.Chrome(options=options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return driver
 
-# --- FUNCIONES ---
-def consultar_sisa(driver, dni, es_primero):
-    res = {"NOMBRE": "No hallado", "OS_SISA": "N/A"}
+# --- 3. FUNCIONES ---
+def consultar_sisa(driver, dni, es_primer_dni):
+    res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
     try:
-        if es_primero:
+        if es_primer_dni:
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
             time.sleep(6)
             puco = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]")))
@@ -44,72 +52,77 @@ def consultar_sisa(driver, dni, es_primero):
         
         campo = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "input")))
         campo.clear()
-        campo.send_keys(str(dni) + Keys.RETURN)
+        campo.send_keys(str(dni))
+        campo.send_keys(Keys.RETURN)
         
         target = f"//td[contains(text(), '{dni}')]"
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
-        cols = driver.find_element(By.XPATH, f"{target}/..").find_elements(By.TAG_NAME, "td")
+        fila = driver.find_element(By.XPATH, f"{target}/..")
+        cols = fila.find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
-            # Aquí respetamos el orden: NOMBRE en uno, OS en otro
-            res = {"NOMBRE": cols[3].text.strip(), "OS_SISA": cols[4].text.strip()}
+            res = {"SISA": cols[3].text, "OS_SISA": cols[4].text}
             log_message(f"✅ SISA OK: {dni}")
     except:
-        log_message(f"⚠️ SISA: Sin datos para {dni}")
+        log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
 def consultar_codem(driver, dni):
-    res = {"INFO_CODEM": "No hallado"}
+    res = {"CODEM": "No hallado"}
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
-        time.sleep(random.uniform(9, 11))
+        # Más tiempo de espera como sugirió GPT
+        time.sleep(random.uniform(9, 12))
         
-        input_doc = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
-        for num in str(dni): 
-            input_doc.send_keys(num)
-            time.sleep(0.1)
+        campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
+        campo.clear()
         
-        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "ContentPlaceHolder1_Button1"))
-        time.sleep(9) # Un segundo más para que ANSES no se queje
+        for char in str(dni):
+            campo.send_keys(char)
+            time.sleep(random.uniform(0.2, 0.4))
+        
+        time.sleep(2)
+        btn = driver.find_element(By.ID, "ContentPlaceHolder1_Button1")
+        driver.execute_script("arguments[0].click();", btn)
+        
+        # Espera después del click
+        time.sleep(5)
         
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        tabla = soup.find("table", {"id": "ContentPlaceHolder1_gvGrilla"})
-        
-        if tabla:
-            filas = tabla.find_all("tr")
-            if len(filas) > 1:
-                # Extraemos TODA la info de la fila del afiliado
-                texto_sucio = filas[1].get_text(separator=" | ").strip()
-                # Limpiamos barras múltiples y espacios
-                texto_limpio = re.sub(r'\|\s+\|', '|', texto_sucio)
-                res["INFO_CODEM"] = re.sub(r'\s+', ' ', texto_limpio)
-                log_message(f"✅ CODEM OK: {dni}")
-        elif "Tu Obra Social es" in soup.get_text():
-             res["INFO_CODEM"] = "Datos hallados (verificar en web)"
+        texto = soup.get_text()
+
+        # Mejora en la captura de datos (Lectura de texto plano)
+        if "Obra Social" in texto:
+            res["CODEM"] = texto.split("Obra Social")[-1][:80].strip().replace("\n", " ")
         else:
-            log_message(f"❌ CODEM: No hallado {dni}")
-    except:
-        log_message(f"❌ CODEM: Error en {dni}")
+            res["CODEM"] = "Sin datos en pantalla"
+            
+        log_message(f"✅ CODEM OK: {dni}")
+    except Exception:
+        log_message(f"❌ CODEM: Fallo o Captcha en {dni}")
     return res
 
-# --- EJECUCIÓN ---
+# --- 4. EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Generando reporte...", expanded=True) as status:
-            d = iniciar_driver()
-            resultados = []
-            for i, dni in enumerate(lista_dni):
-                sisa = consultar_sisa(d, dni, i==0)
-                anses = consultar_codem(d, dni)
-                
-                fila = {"DNI": dni}
-                fila.update(sisa)
-                fila.update(anses)
-                resultados.append(fila)
-            d.quit()
+        with st.status("Procesando consulta dual...", expanded=True) as status:
+            log_message("Fase SISA...")
+            d1 = iniciar_driver()
+            r1 = [consultar_sisa(d1, d, i==0) for i, d in enumerate(lista_dni)]
+            d1.quit()
+            
+            time.sleep(5)
+            
+            log_message("Fase CODEM (Sigilo máximo)...")
+            d2 = iniciar_driver()
+            r2 = [consultar_codem(d2, d) for d in lista_dni]
+            d2.quit()
             status.update(label="Proceso terminado", state="complete")
 
-        df = pd.DataFrame(resultados)
-        st.subheader("📊 Reporte Detallado")
+        final = []
+        for i, d in enumerate(lista_dni):
+            final.append({"DNI": d, **r1[i], **r2[i]})
+        
+        df = pd.DataFrame(final)
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
