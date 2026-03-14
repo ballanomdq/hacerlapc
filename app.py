@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import re
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -128,10 +129,9 @@ def consultar_dni_selenium(dni):
         dni_field.send_keys(str(dni))
         log_message("DNI ingresado.")
         
-        # 5. Buscar botón Buscar (VERSIÓN MEJORADA)
+        # 5. Buscar botón Buscar
         log_message("Buscando botón 'Buscar'...")
         
-        # Guardar el HTML para depuración
         html_actual = driver.page_source
         log_message("HTML actual (primeros 500 caracteres): " + html_actual[:500].replace("\n", " "))
         
@@ -160,7 +160,6 @@ def consultar_dni_selenium(dni):
                 continue
         
         if not boton:
-            # Buscar cualquier botón visible con texto que contenga "buscar"
             botones = driver.find_elements(By.TAG_NAME, "button")
             for btn in botones:
                 if btn.is_displayed():
@@ -171,7 +170,6 @@ def consultar_dni_selenium(dni):
                         break
         
         if not boton:
-            # Último recurso: JavaScript
             script = """
             var elements = document.querySelectorAll('button, input[type="submit"], a, div[role="button"]');
             for (var i = 0; i < elements.length; i++) {
@@ -191,18 +189,13 @@ def consultar_dni_selenium(dni):
         driver.execute_script("arguments[0].click();", boton)
         log_message("Botón Buscar clickeado.")
         
-        # 6. Esperar resultados
+        # 6. Esperar que aparezca alguna tabla (pueden haber varias)
         log_message("Esperando resultados...")
         try:
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.XPATH, "//table"))
             )
-            log_message("Tabla de resultados encontrada.")
-            
-            # Depuración: mostrar HTML de la tabla
-            tabla_html = driver.find_element(By.XPATH, "//table").get_attribute("outerHTML")
-            log_message(f"HTML de la tabla: {tabla_html[:500]}...")  # Primeros 500 caracteres
-            
+            log_message("Al menos una tabla encontrada.")
         except TimeoutException:
             body_text = driver.find_element(By.TAG_NAME, "body").text
             if "no se encontraron" in body_text.lower() or "sin resultados" in body_text.lower():
@@ -210,20 +203,47 @@ def consultar_dni_selenium(dni):
                 log_message("El sistema indica que no hay resultados.")
                 return resultado
             else:
-                raise Exception("No apareció la tabla de resultados.")
+                raise Exception("No apareció ninguna tabla.")
         
-        # 7. Extraer datos - buscar en todas las filas hasta encontrar datos válidos
-        filas = driver.find_elements(By.XPATH, "//table/tbody/tr")
-        if not filas:
-            filas = driver.find_elements(By.XPATH, "//table/tr")  # alternativa sin tbody
+        # 7. Buscar la tabla que contiene los datos reales
+        tablas = driver.find_elements(By.XPATH, "//table")
+        tabla_resultados = None
+        for tabla in tablas:
+            filas = tabla.find_elements(By.XPATH, ".//tr")
+            for fila in filas:
+                celdas = fila.find_elements(By.TAG_NAME, "td")
+                if len(celdas) >= 2:
+                    texto_combinado = " ".join([c.text for c in celdas if c.text])
+                    # Buscar un patrón de DNI (7-8 dígitos) o palabras clave
+                    if re.search(r'\b\d{7,8}\b', texto_combinado) or "OBRA SOCIAL" in texto_combinado.upper():
+                        tabla_resultados = tabla
+                        log_message("Tabla de datos identificada.")
+                        break
+            if tabla_resultados:
+                break
         
+        if not tabla_resultados:
+            # Fallback: usar la primera tabla
+            tabla_resultados = tablas[0] if tablas else None
+            log_message("Usando primera tabla como fallback.")
+        
+        if not tabla_resultados:
+            raise Exception("No se encontró ninguna tabla.")
+        
+        # Mostrar HTML de la tabla seleccionada para depuración
+        tabla_html = tabla_resultados.get_attribute("outerHTML")
+        log_message(f"HTML de tabla seleccionada: {tabla_html[:500]}...")
+        
+        # 8. Extraer datos de la tabla correcta
+        filas = tabla_resultados.find_elements(By.XPATH, ".//tr")
         datos_encontrados = False
         for fila in filas:
             celdas = fila.find_elements(By.TAG_NAME, "td")
             if len(celdas) >= 2:
                 texto_celda0 = celdas[0].text.strip()
                 texto_celda1 = celdas[1].text.strip()
-                if texto_celda0 and texto_celda1:  # ambas celdas con contenido
+                # Evitar celdas vacías o con texto de encabezado
+                if texto_celda0 and texto_celda1 and not re.match(r'^(Buscar|NroDoc|Cobertura|Denominación)', texto_celda0, re.I):
                     cobertura = texto_celda0
                     beneficiario = texto_celda1
                     resultado = {"DNI": dni, "Cobertura": cobertura, "Beneficiario": beneficiario, "Estado": "✅ OK"}
@@ -232,15 +252,14 @@ def consultar_dni_selenium(dni):
                     break
         
         if not datos_encontrados:
-            resultado["Estado"] = "❌ No encontrado (sin datos en tabla)"
-            log_message("No se encontraron datos en la tabla.")
+            resultado["Estado"] = "❌ No encontrado (sin datos válidos)"
+            log_message("No se encontraron datos válidos en la tabla.")
             
     except Exception as e:
         error_msg = str(e)[:100]
         resultado["Estado"] = f"Error: {error_msg}"
         log_message(f"❌ Error: {error_msg}")
         
-        # Capturar pantalla
         try:
             screenshot = driver.get_screenshot_as_png()
             st.image(screenshot, caption=f"Error en DNI {dni}", width=400)
