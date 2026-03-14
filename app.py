@@ -1,54 +1,3 @@
-import streamlit as st
-import pandas as pd
-import time
-import re
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-
-st.set_page_config(page_title="HACER LA PC - PUCO", layout="wide")
-st.title("💻 HACER LA PC - Consulta Masiva PUCO (SISA)")
-
-# --- Estilo ---
-st.markdown("""
-<style>
-    .stDataFrame { border: 1px solid #38bdf8; border-radius: 10px; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- Entrada de datos ---
-with st.container():
-    st.subheader("📋 Ingreso de DNI")
-    dni_input = st.text_area("Escribí un DNI por línea:", height=150, placeholder="Ejemplo:\n25131361\n25808007")
-    col1, col2 = st.columns([1,5])
-    with col1:
-        buscar_btn = st.button("🚀 Consultar Ahora", type="primary")
-
-# --- Contenedor para resultados y logs ---
-result_container = st.container()
-log_container = st.expander("📋 Log de ejecución", expanded=False)
-
-def log_message(msg):
-    log_container.markdown(f"- {msg}")
-
-def iniciar_driver():
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    driver = webdriver.Chrome(options=options)
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    return driver
-
 def consultar_dni_selenium(dni):
     driver = iniciar_driver()
     resultado = {"DNI": dni, "Cobertura": "Error", "Beneficiario": "-", "Estado": "❌ Fallo"}
@@ -132,9 +81,6 @@ def consultar_dni_selenium(dni):
         # 5. Buscar botón Buscar
         log_message("Buscando botón 'Buscar'...")
         
-        html_actual = driver.page_source
-        log_message("HTML actual (primeros 500 caracteres): " + html_actual[:500].replace("\n", " "))
-        
         selectores_boton = [
             "//button[contains(text(), 'Buscar')]",
             "//button[contains(text(), 'BUSCAR')]",
@@ -189,13 +135,15 @@ def consultar_dni_selenium(dni):
         driver.execute_script("arguments[0].click();", boton)
         log_message("Botón Buscar clickeado.")
         
-        # 6. Esperar que aparezca alguna tabla (pueden haber varias)
-        log_message("Esperando resultados...")
+        # 6. Esperar a que aparezca el DNI en algún lugar de la página (resultados)
+        log_message("Esperando que aparezca el DNI en los resultados...")
         try:
+            # Esperar un elemento que contenga el DNI pero que no sea el campo de entrada
+            xpath_dni_result = f"//*[contains(text(), '{dni}') and not(self::input)]"
             WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.XPATH, "//table"))
+                EC.presence_of_element_located((By.XPATH, xpath_dni_result))
             )
-            log_message("Al menos una tabla encontrada.")
+            log_message("DNI encontrado en resultados.")
         except TimeoutException:
             body_text = driver.find_element(By.TAG_NAME, "body").text
             if "no se encontraron" in body_text.lower() or "sin resultados" in body_text.lower():
@@ -203,57 +151,80 @@ def consultar_dni_selenium(dni):
                 log_message("El sistema indica que no hay resultados.")
                 return resultado
             else:
-                raise Exception("No apareció ninguna tabla.")
+                log_message("No se encontró el DNI, pero se intentará buscar tabla de todas formas.")
         
-        # 7. Buscar la tabla que contiene los datos reales
+        # 7. Buscar la tabla de resultados: debe contener el DNI y tener al menos dos celdas con datos
+        log_message("Buscando tabla de resultados...")
         tablas = driver.find_elements(By.XPATH, "//table")
         tabla_resultados = None
         for tabla in tablas:
-            filas = tabla.find_elements(By.XPATH, ".//tr")
-            for fila in filas:
-                celdas = fila.find_elements(By.TAG_NAME, "td")
-                if len(celdas) >= 2:
-                    texto_combinado = " ".join([c.text for c in celdas if c.text])
-                    # Buscar un patrón de DNI (7-8 dígitos) o palabras clave
-                    if re.search(r'\b\d{7,8}\b', texto_combinado) or "OBRA SOCIAL" in texto_combinado.upper():
+            # Si la tabla contiene el DNI
+            if dni in tabla.text:
+                # Verificar que tenga al menos una fila con dos celdas con texto sustancial
+                filas = tabla.find_elements(By.XPATH, ".//tr")
+                for fila in filas:
+                    celdas = fila.find_elements(By.TAG_NAME, "td")
+                    if len(celdas) >= 2:
+                        texto0 = celdas[0].text.strip()
+                        texto1 = celdas[1].text.strip()
+                        # Evitar celdas que parezcan encabezados
+                        if texto0 and texto1 and len(texto0) > 3 and len(texto1) > 3:
+                            tabla_resultados = tabla
+                            log_message("Tabla de resultados identificada.")
+                            break
+                if tabla_resultados:
+                    break
+        
+        if not tabla_resultados:
+            # Fallback: tomar la primera tabla que tenga al menos una fila con dos celdas
+            log_message("No se encontró tabla con DNI, usando primera tabla con datos.")
+            for tabla in tablas:
+                filas = tabla.find_elements(By.XPATH, ".//tr")
+                for fila in filas:
+                    celdas = fila.find_elements(By.TAG_NAME, "td")
+                    if len(celdas) >= 2:
                         tabla_resultados = tabla
-                        log_message("Tabla de datos identificada.")
                         break
-            if tabla_resultados:
-                break
+                if tabla_resultados:
+                    break
         
         if not tabla_resultados:
-            # Fallback: usar la primera tabla
-            tabla_resultados = tablas[0] if tablas else None
-            log_message("Usando primera tabla como fallback.")
+            raise Exception("No se encontró ninguna tabla de resultados.")
         
-        if not tabla_resultados:
-            raise Exception("No se encontró ninguna tabla.")
-        
-        # Mostrar HTML de la tabla seleccionada para depuración
+        # Mostrar HTML de la tabla seleccionada
         tabla_html = tabla_resultados.get_attribute("outerHTML")
         log_message(f"HTML de tabla seleccionada: {tabla_html[:500]}...")
         
-        # 8. Extraer datos de la tabla correcta
+        # 8. Extraer datos: buscar la primera fila con dos celdas que no sean encabezados
         filas = tabla_resultados.find_elements(By.XPATH, ".//tr")
         datos_encontrados = False
         for fila in filas:
             celdas = fila.find_elements(By.TAG_NAME, "td")
             if len(celdas) >= 2:
-                texto_celda0 = celdas[0].text.strip()
-                texto_celda1 = celdas[1].text.strip()
-                # Evitar celdas vacías o con texto de encabezado
-                if texto_celda0 and texto_celda1 and not re.match(r'^(Buscar|NroDoc|Cobertura|Denominación)', texto_celda0, re.I):
-                    cobertura = texto_celda0
-                    beneficiario = texto_celda1
+                texto0 = celdas[0].text.strip()
+                texto1 = celdas[1].text.strip()
+                # Ignorar filas que parezcan encabezados (palabras clave)
+                if texto0 and texto1 and not any(p in texto0.lower() for p in ["buscar", "nrodoc", "cobertura", "denominacion", "última búsqueda"]):
+                    cobertura = texto0
+                    beneficiario = texto1
                     resultado = {"DNI": dni, "Cobertura": cobertura, "Beneficiario": beneficiario, "Estado": "✅ OK"}
                     log_message(f"Datos extraídos: {cobertura} - {beneficiario}")
                     datos_encontrados = True
                     break
         
         if not datos_encontrados:
-            resultado["Estado"] = "❌ No encontrado (sin datos válidos)"
-            log_message("No se encontraron datos válidos en la tabla.")
+            # Si no se encontró con filtro, tomar la primera fila con dos celdas
+            for fila in filas:
+                celdas = fila.find_elements(By.TAG_NAME, "td")
+                if len(celdas) >= 2:
+                    resultado = {"DNI": dni, "Cobertura": celdas[0].text.strip(), "Beneficiario": celdas[1].text.strip(), "Estado": "⚠️ Posible dato"}
+                    log_message("Datos extraídos sin validación (pueden ser incorrectos).")
+                    datos_encontrados = True
+                    break
+        
+        if not datos_encontrados:
+            resultado["Estado"] = "❌ No encontrado (sin datos en tabla)"
+            log_message("No se encontraron datos en la tabla.")
             
     except Exception as e:
         error_msg = str(e)[:100]
@@ -270,32 +241,3 @@ def consultar_dni_selenium(dni):
         driver.quit()
     
     return resultado
-
-# --- Lógica principal ---
-if buscar_btn and dni_input:
-    lista_dnis = [d.strip() for d in dni_input.split('\n') if d.strip()]
-    if not lista_dnis:
-        st.warning("Ingresá al menos un DNI.")
-    else:
-        resultados = []
-        barra = st.progress(0)
-        status_text = st.empty()
-        
-        for i, dni in enumerate(lista_dnis):
-            status_text.text(f"Consultando DNI {dni}...")
-            resultados.append(consultar_dni_selenium(dni))
-            barra.progress((i + 1) / len(lista_dnis))
-            time.sleep(2)
-        
-        status_text.text("¡Proceso completado!")
-        
-        df = pd.DataFrame(resultados)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Descargar CSV",
-            data=csv,
-            file_name="resultados_puco.csv",
-            mime="text/csv"
-        )
