@@ -148,7 +148,7 @@ def consultar_sisa(driver, dni, es_primer_dni):
         log_message(f"SISA Error: {str(e)[:100]}")
     return resultado
 
-# ==================== FUNCIONES CODEM ====================
+# ==================== FUNCIONES CODEM (MEJORADA) ====================
 def consultar_codem(driver, dni, es_primer_dni):
     resultado = {"Obra Social CODEM": "", "Familiares": ""}
     try:
@@ -196,10 +196,21 @@ def consultar_codem(driver, dni, es_primer_dni):
         
         boton.click()
         
-        # Esperar resultado
-        time.sleep(3)
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        # Esperar a que aparezca el resultado (obra social)
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_lblObraSocial"))
+            )
+            log_message("CODEM: Resultado de obra social detectado")
+        except TimeoutException:
+            log_message("CODEM: No apareció el resultado de obra social")
+            # Guardar HTML parcial para depuración
+            html = driver.page_source[:500]
+            log_message(f"HTML parcial: {html}")
+            return resultado
         
+        # Extraer con BeautifulSoup
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
         obra = soup.find('span', {'id': 'ContentPlaceHolder1_lblObraSocial'})
         if obra:
             resultado["Obra Social CODEM"] = obra.text.strip()
