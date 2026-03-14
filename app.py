@@ -23,7 +23,7 @@ log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# --- 2. EL MOTOR ---
+# --- 2. MOTOR ---
 def iniciar_driver():
     options = Options()
     options.add_argument("--headless=new")
@@ -31,12 +31,11 @@ def iniciar_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    
     driver = webdriver.Chrome(options=options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# --- 3. FUNCIONES CORREGIDAS ---
+# --- 3. FUNCIONES ---
 def consultar_sisa(driver, dni, es_primer_dni):
     res = {"ESTADO_SISA": "Sin datos", "OBRA_SOCIAL_SISA": "N/A"}
     try:
@@ -64,33 +63,37 @@ def consultar_sisa(driver, dni, es_primer_dni):
     return res
 
 def consultar_codem(driver, dni):
-    res = {"ESTADO_CODEM": "No hallado", "DETALLE_CODEM": "N/A"}
+    res = {"CODEM_ESTADO": "No hallado", "CODEM_OS": "N/A"}
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
-        time.sleep(random.uniform(9, 12))
+        time.sleep(random.uniform(9, 11))
         
         campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
-        campo.clear()
         for char in str(dni):
             campo.send_keys(char)
             time.sleep(0.1)
         
-        btn = driver.find_element(By.ID, "ContentPlaceHolder1_Button1")
-        driver.execute_script("arguments[0].click();", btn)
-        time.sleep(6)
+        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "ContentPlaceHolder1_Button1"))
+        time.sleep(7)
         
+        # EXTRACCIÓN MEJORADA
         source = driver.page_source
         if "Obra Social" in source:
             soup = BeautifulSoup(source, "html.parser")
-            texto_limpio = soup.get_text()
-            # Capturamos el estado ACTIVO/INACTIVO y el nombre de la OS
-            res["ESTADO_CODEM"] = "ACTIVO ✅" if "ACTIVO" in texto_limpio else "INACTIVO ❌"
-            res["DETALLE_CODEM"] = texto_limpio.split("Obra Social")[-1][:80].strip().replace("\n", " ")
+            celdas = soup.find_all('td')
+            # Buscamos por posición en la tabla de ANSES
+            for i, celda in enumerate(celdas):
+                texto = celda.get_text().strip()
+                if "Descripción" in texto and i + 1 < len(celdas):
+                    res["CODEM_OS"] = celdas[i+6].get_text().strip() # Nombre OS
+                if "Situación" in texto and i + 1 < len(celdas):
+                    res["CODEM_ESTADO"] = celdas[i+6].get_text().strip() # ACTIVO/INACTIVO
+            
             log_message(f"✅ CODEM OK: {dni}")
         else:
-            log_message(f"❌ CODEM: Fallo o Captcha en {dni}")
+            log_message(f"❌ CODEM: Sin datos para {dni}")
     except:
-        log_message(f"❌ CODEM: Error en {dni}")
+        log_message(f"❌ CODEM: Error técnico en {dni}")
     return res
 
 # --- 4. EJECUCIÓN ---
@@ -98,27 +101,30 @@ if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
         with st.status("Procesando consulta dual...", expanded=True) as status:
-            log_message("Iniciando Fase SISA...")
+            log_message("Fase SISA...")
             d1 = iniciar_driver()
             r1 = [consultar_sisa(d1, d, i==0) for i, d in enumerate(lista_dni)]
             d1.quit()
             
             time.sleep(3)
             
-            log_message("Iniciando Fase CODEM (Sigilo máximo)...")
+            log_message("Fase CODEM (Sigilo)...")
             d2 = iniciar_driver()
             r2 = [consultar_codem(d2, d) for d in lista_dni]
             d2.quit()
             status.update(label="Proceso terminado", state="complete")
 
+        # Unimos todo en la tabla final
         final = []
         for i, d in enumerate(lista_dni):
-            final.append({"DNI": d, **r1[i], **r2[i]})
+            # Combinamos DNI + Datos SISA + Datos CODEM
+            fila_final = {"DNI": d}
+            fila_final.update(r1[i])
+            fila_final.update(r2[i])
+            final.append(fila_final)
         
         df = pd.DataFrame(final)
-        
-        st.subheader("📊 Resultados Finales")
+        st.subheader("📊 Reporte Unificado de Obra Social")
         st.dataframe(df, use_container_width=True, hide_index=True)
         
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Descargar Planilla", csv, "reporte_osecac.csv", "text/csv")
+        st.download_button("📥 Descargar Planilla Excel", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv", "text/csv")
