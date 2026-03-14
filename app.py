@@ -12,11 +12,10 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="HACER LA PC - OSECAC", layout="wide")
-st.title("🏥 Sistema Unificado de Consultas - Agencia MDP")
+st.title("🏥 Sistema de Consultas OSECAC MDP")
 
-with st.container():
-    dni_input = st.text_area("📋 Ingresá los DNI para el informe:", height=150)
-    buscar_btn = st.button("🚀 Generar Informe Detallado", type="primary")
+dni_input = st.text_area("📋 Ingresá los DNI (uno por línea):", height=150)
+buscar_btn = st.button("🚀 Iniciar Consulta", type="primary")
 
 log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
@@ -31,9 +30,9 @@ def iniciar_driver():
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=options)
 
-# --- 2. FUNCIONES DE EXTRACCIÓN ---
+# --- 2. FUNCIONES ---
 def consultar_sisa(driver, dni, es_primero):
-    res = {"NOMBRE": "N/A", "OS_SISA": "N/A"}
+    res = {"NOMBRE": "No hallado", "OS_SISA": "N/A"}
     try:
         if es_primero:
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
@@ -48,71 +47,74 @@ def consultar_sisa(driver, dni, es_primero):
         
         target = f"//td[contains(text(), '{dni}')]"
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
-        cols = driver.find_element(By.XPATH, f"{target}/..").find_elements(By.TAG_NAME, "td")
+        fila = driver.find_element(By.XPATH, f"{target}/..")
+        cols = fila.find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
-            # CORRECCIÓN: cols[3] es el nombre, cols[4] es la obra social
             res = {"NOMBRE": cols[3].text.strip(), "OS_SISA": cols[4].text.strip()}
             log_message(f"✅ SISA OK: {dni}")
     except:
-        log_message(f"⚠️ SISA: No hallado {dni}")
+        log_message(f"⚠️ SISA: Sin datos para {dni}")
     return res
 
 def consultar_codem(driver, dni):
-    res = {"OS_ANSES": "N/A", "CONDICION": "N/A", "SITUACION": "N/A"}
+    # Usamos una sola columna para que no haya desfasajes visuales
+    res = {"INFO_CODEM": "No hallado"}
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
         time.sleep(random.uniform(9, 11))
         
         input_doc = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
-        for num in str(dni): input_doc.send_keys(num); time.sleep(0.1)
+        for num in str(dni): 
+            input_doc.send_keys(num)
+            time.sleep(0.1)
         
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "ContentPlaceHolder1_Button1"))
         time.sleep(8)
         
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        # Buscamos la tabla de resultados
         tabla = soup.find("table", {"id": "ContentPlaceHolder1_gvGrilla"})
         if tabla:
             filas = tabla.find_all("tr")
             if len(filas) > 1:
-                datos = filas[1].find_all("td")
-                # La estructura de ANSES es fija en la grilla:
-                # 0: Cod OS, 1: Descripción, 2: Parentesco (Condición), 3: Situación, 4: CODEM (impresora)
-                res["OS_ANSES"] = datos[1].get_text().strip()
-                res["CONDICION"] = datos[2].get_text().strip()
-                res["SITUACION"] = datos[3].get_text().strip()
+                # Capturamos TODA la fila del CODEM como un solo texto
+                texto_fila = filas[1].get_text(separator=" | ").strip()
+                res["INFO_CODEM"] = texto_fila
                 log_message(f"✅ CODEM OK: {dni}")
+        elif "Obra Social" in driver.page_source:
+             # Backup por si no hay tabla pero hay texto
+             texto_total = soup.get_text()
+             if "Descripción" in texto_total:
+                 res["INFO_CODEM"] = "Datos hallados en pantalla (verificar manual)"
         else:
-            log_message(f"❌ CODEM: Sin tabla de datos para {dni}")
-    except Exception as e:
+            log_message(f"❌ CODEM: Sin datos para {dni}")
+    except:
         log_message(f"❌ CODEM: Error en {dni}")
     return res
 
-# --- 3. PROCESO FINAL ---
+# --- 3. EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Generando reporte detallado...", expanded=True) as status:
+        with st.status("Procesando informe unificado...", expanded=True) as status:
             d = iniciar_driver()
             resultados = []
             for i, dni in enumerate(lista_dni):
-                log_message(f"Procesando: {dni}...")
-                data_sisa = consultar_sisa(d, dni, i==0)
-                time.sleep(2)
-                data_anses = consultar_codem(d, dni)
+                log_message(f"Consultando DNI: {dni}")
+                sisa = consultar_sisa(d, dni, i==0)
+                anses = consultar_codem(d, dni)
                 
-                final_row = {"DNI": dni}
-                final_row.update(data_sisa)
-                final_row.update(data_anses)
-                resultados.append(final_row)
+                # Armamos la fila
+                fila = {"DNI": dni}
+                fila.update(sisa)
+                fila.update(anses)
+                resultados.append(fila)
             
             d.quit()
-            status.update(label="Informe completo", state="complete")
+            status.update(label="Proceso terminado", state="complete")
 
         df = pd.DataFrame(resultados)
-        cols_orden = ["DNI", "NOMBRE", "OS_SISA", "OS_ANSES", "CONDICION", "SITUACION"]
-        df = df[cols_orden]
         
-        st.subheader("📊 Reporte Detallado por Afiliado")
+        st.subheader("📊 Reporte Detallado")
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "informe_osecac_mdp.csv")
+        
+        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac_unificado.csv")
