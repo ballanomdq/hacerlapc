@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import random
+import re
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -12,7 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="HACER LA PC - OSECAC", layout="wide")
-st.title("💻 HACER LA PC - Sistema Unificado")
+st.title("💻 HACER LA PC - Sistema Unificado MDP")
 
 with st.container():
     st.subheader("📋 Ingreso de Datos")
@@ -23,17 +24,15 @@ log_container = st.expander("📋 Log de ejecución", expanded=True)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# --- 2. EL MOTOR (Mantenemos headless para que funcione en Streamlit Cloud) ---
 def iniciar_driver():
     options = Options()
-    options.add_argument("--headless=new") # Necesario para la web
+    options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
     
     driver = webdriver.Chrome(options=options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -41,7 +40,7 @@ def iniciar_driver():
 
 # --- 3. FUNCIONES ---
 def consultar_sisa(driver, dni, es_primer_dni):
-    res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
+    res = {"SISA_NOMBRE": "No hallado", "SISA_OS": "N/A"}
     try:
         if es_primer_dni:
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
@@ -52,68 +51,61 @@ def consultar_sisa(driver, dni, es_primer_dni):
         
         campo = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "input")))
         campo.clear()
-        campo.send_keys(str(dni))
-        campo.send_keys(Keys.RETURN)
+        campo.send_keys(str(dni) + Keys.RETURN)
         
         target = f"//td[contains(text(), '{dni}')]"
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
-        fila = driver.find_element(By.XPATH, f"{target}/..")
-        cols = fila.find_elements(By.TAG_NAME, "td")
+        cols = driver.find_element(By.XPATH, f"{target}/..").find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
-            res = {"SISA": cols[3].text, "OS_SISA": cols[4].text}
+            res = {"SISA_NOMBRE": cols[3].text.strip(), "SISA_OS": cols[4].text.strip()}
             log_message(f"✅ SISA OK: {dni}")
     except:
         log_message(f"⚠️ SISA: No hallado {dni}")
     return res
 
 def consultar_codem(driver, dni):
-    res = {"CODEM": "No hallado"}
+    res = {"ESTADO_CODEM": "N/A", "CODEM_OS": "No hallado"}
     try:
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
-        # Más tiempo de espera como sugirió GPT
         time.sleep(random.uniform(9, 12))
         
         campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
         campo.clear()
-        
         for char in str(dni):
             campo.send_keys(char)
-            time.sleep(random.uniform(0.2, 0.4))
+            time.sleep(random.uniform(0.1, 0.3))
         
-        time.sleep(2)
-        btn = driver.find_element(By.ID, "ContentPlaceHolder1_Button1")
-        driver.execute_script("arguments[0].click();", btn)
-        
-        # Espera después del click
-        time.sleep(5)
+        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "ContentPlaceHolder1_Button1"))
+        time.sleep(7)
         
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        texto = soup.get_text()
+        texto = soup.get_text(separator=" ")
 
-        # Mejora en la captura de datos (Lectura de texto plano)
+        # Capturamos el Estado (Activo/Inactivo) que aparece en la grilla
+        if "ACTIVO" in texto.upper():
+            res["ESTADO_CODEM"] = "ACTIVO ✅"
+        elif "INACTIVO" in texto.upper():
+            res["ESTADO_CODEM"] = "INACTIVO ❌"
+
         if "Obra Social" in texto:
-            res["CODEM"] = texto.split("Obra Social")[-1][:80].strip().replace("\n", " ")
-        else:
-            res["CODEM"] = "Sin datos en pantalla"
-            
+            res["CODEM_OS"] = texto.split("Obra Social")[-1][:90].strip().replace("\n", " ")
+        
         log_message(f"✅ CODEM OK: {dni}")
     except Exception:
-        log_message(f"❌ CODEM: Fallo o Captcha en {dni}")
+        log_message(f"❌ CODEM: Error en {dni}")
     return res
 
 # --- 4. EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Procesando consulta dual...", expanded=True) as status:
-            log_message("Fase SISA...")
+        with st.status("Ejecutando consulta institucional...", expanded=True) as status:
             d1 = iniciar_driver()
             r1 = [consultar_sisa(d1, d, i==0) for i, d in enumerate(lista_dni)]
             d1.quit()
             
-            time.sleep(5)
+            time.sleep(4)
             
-            log_message("Fase CODEM (Sigilo máximo)...")
             d2 = iniciar_driver()
             r2 = [consultar_codem(d2, d) for d in lista_dni]
             d2.quit()
@@ -125,4 +117,5 @@ if buscar_btn and dni_input:
         
         df = pd.DataFrame(final)
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
+        st.info("💡 Nota: El CUIT detallado solo es visible en el PDF oficial de ANSES.")
+        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac_mdp.csv")
