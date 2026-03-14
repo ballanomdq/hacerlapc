@@ -2,16 +2,18 @@ import streamlit as st
 import pandas as pd
 import time
 import random
+import requests
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-st.set_page_config(page_title="HACER LA PC - PUCO", layout="wide")
-st.title("💻 HACER LA PC - Consulta Rápida de Datos PUCO (SISA)")
+st.set_page_config(page_title="HACER LA PC - Completo", layout="wide")
+st.title("💻 HACER LA PC - Control Completo (SISA + CODEM)")
 
 st.markdown("""
 <style>
@@ -32,7 +34,8 @@ log_container = st.expander("📋 Log de ejecución", expanded=False)
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-def iniciar_driver():
+# ==================== FUNCIONES SISA (SELENIUM) ====================
+def iniciar_driver_sisa():
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -47,215 +50,212 @@ def iniciar_driver():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-def esperar_campo_dni(driver):
-    """Reintenta hasta encontrar el campo DNI, con refresh si es necesario."""
-    for intento in range(3):
-        try:
-            selectores = [
-                "//input[contains(@name, 'dni')]",
-                "//input[contains(@id, 'dni')]",
-                "//input[@type='text' and contains(@placeholder, 'DNI')]",
-                "//input[contains(@class, 'dni')]"
-            ]
-            for selector in selectores:
+def consultar_sisa_selenium(driver, dni, es_primer_dni):
+    resultado_sisa = {
+        "TipoDoc": "",
+        "NroDoc": "",
+        "Sexo": "",
+        "Cobertura SISA": "",
+        "Denominación": ""
+    }
+    
+    try:
+        if es_primer_dni:
+            log_message(f"SISA: Iniciando para DNI {dni}")
+            driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
+            log_message("Esperando módulo PUCO...")
+            try:
+                puco = WebDriverWait(driver, 15).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
+                )
+            except TimeoutException:
+                puco = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'consulta de cobertura')]"))
+                )
+            
+            time.sleep(random.uniform(1, 2))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", puco)
+            time.sleep(random.uniform(0.3, 0.8))
+            driver.execute_script("arguments[0].click();", puco)
+            log_message("Módulo PUCO clickeado.")
+            
+            # Esperar campo DNI
+            campo_dni = None
+            for intento in range(3):
                 try:
-                    campo = WebDriverWait(driver, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, selector))
+                    campo_dni = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//input[contains(@name, 'dni')]"))
                     )
-                    log_message("Campo DNI encontrado.")
-                    return campo
+                    break
                 except:
-                    continue
-            # Si no se encontró, buscar cualquier input visible
-            inputs = driver.find_elements(By.TAG_NAME, "input")
-            for inp in inputs:
-                if inp.is_displayed() and inp.get_attribute("type") in ["text", "search"]:
-                    log_message("Campo DNI encontrado como input visible.")
-                    return inp
-        except:
-            pass
+                    time.sleep(2)
+            if not campo_dni:
+                raise Exception("No se encontró campo DNI en SISA")
+        else:
+            # Reutilizar el campo existente
+            campo_dni = driver.find_element(By.XPATH, "//input[contains(@name, 'dni')]")
         
-        log_message(f"Reintentando búsqueda de campo DNI ({intento+1}/3)...")
-        time.sleep(2)
-    
-    # Si falla, refrescar página y esperar de nuevo
-    log_message("Refrescando página...")
-    driver.refresh()
-    time.sleep(3)
-    return None
+        # Ingresar DNI y enviar ENTER
+        campo_dni.clear()
+        time.sleep(random.uniform(0.2, 0.5))
+        campo_dni.send_keys(str(dni))
+        time.sleep(random.uniform(0.3, 0.7))
+        campo_dni.send_keys(Keys.RETURN)
+        log_message(f"SISA: Enter enviado para DNI {dni}")
+        
+        # Esperar resultados
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, f"//td[contains(text(), '{dni}')]"))
+            )
+        except TimeoutException:
+            log_message("SISA: Tiempo de espera agotado")
+            return resultado_sisa
+        
+        time.sleep(random.uniform(0.5, 1))
+        
+        # Buscar la fila con el DNI
+        tablas = driver.find_elements(By.XPATH, "//table")
+        for tabla in tablas:
+            celdas_dni = tabla.find_elements(By.XPATH, f".//td[contains(text(), '{dni}')]")
+            for celda in celdas_dni:
+                texto = celda.text.strip()
+                if texto == str(dni) or (texto.isdigit() and len(texto) in (7,8)):
+                    fila = celda.find_element(By.XPATH, "..")
+                    celdas_fila = fila.find_elements(By.TAG_NAME, "td")
+                    if len(celdas_fila) >= 5:
+                        resultado_sisa["TipoDoc"] = celdas_fila[0].text.strip()
+                        resultado_sisa["NroDoc"] = celdas_fila[1].text.strip()
+                        resultado_sisa["Sexo"] = celdas_fila[2].text.strip()
+                        resultado_sisa["Cobertura SISA"] = celdas_fila[3].text.strip()
+                        resultado_sisa["Denominación"] = celdas_fila[4].text.strip()
+                        log_message(f"SISA: Datos extraídos OK")
+                        return resultado_sisa
+        
+        log_message("SISA: No se encontraron datos")
+        return resultado_sisa
+        
+    except Exception as e:
+        log_message(f"SISA Error: {str(e)[:50]}")
+        return resultado_sisa
 
-def extraer_datos_fila(driver, dni):
-    """Busca la fila que contiene el DNI y extrae todas las celdas."""
-    tablas = driver.find_elements(By.XPATH, "//table")
-    log_message(f"Se encontraron {len(tablas)} tablas.")
+# ==================== FUNCIONES CODEM (REQUESTS) ====================
+def consultar_codem_requests(dni):
+    """
+    Consulta el CODEM de ANSES usando requests (sin Selenium).
+    Retorna obra social y familiares.
+    """
+    resultado_codem = {
+        "Obra Social CODEM": "",
+        "Familiares": ""
+    }
     
-    for tabla in tablas:
-        celdas_dni = tabla.find_elements(By.XPATH, f".//td[contains(text(), '{dni}')]")
-        for celda in celdas_dni:
-            texto = celda.text.strip()
-            if texto == str(dni) or (texto.isdigit() and len(texto) in (7,8)):
-                fila = celda.find_element(By.XPATH, "..")
-                celdas = fila.find_elements(By.TAG_NAME, "td")
-                log_message(f"Fila encontrada con {len(celdas)} celdas.")
-                return celdas
-    return None
+    try:
+        # URL del CODEM
+        url = "https://servicioswww.anses.gob.ar/ooss2/"
+        
+        # Primera petición GET para obtener los campos ocultos
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "es-US,es-419;q=0.9,es;q=0.8",
+        }
+        
+        response = session.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extraer campos ocultos del ASP.NET
+        viewstate = soup.find('input', {'name': '__VIEWSTATE'})
+        viewstategen = soup.find('input', {'name': '__VIEWSTATEGENERATOR'})
+        eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'})
+        
+        if not viewstate or not eventvalidation:
+            log_message("CODEM: No se pudieron obtener campos del formulario")
+            return resultado_codem
+        
+        # Preparar datos para el POST
+        data = {
+            '__LASTFOCUS': '',
+            '__EVENTTARGET': '',
+            '__EVENTARGUMENT': '',
+            '__VIEWSTATE': viewstate['value'],
+            '__VIEWSTATEGENERATOR': viewstategen['value'] if viewstategen else '',
+            '__EVENTVALIDATION': eventvalidation['value'],
+            'ctl00$ContentPlaceHolder1$txtDoc': str(dni),
+            'ctl00$ContentPlaceHolder1$Button1': 'Continuar'
+        }
+        
+        # Enviar POST
+        headers_post = headers.copy()
+        headers_post["Content-Type"] = "application/x-www-form-urlencoded"
+        
+        response_post = session.post(url, data=data, headers=headers_post, timeout=15)
+        
+        if response_post.status_code == 200:
+            soup_result = BeautifulSoup(response_post.text, 'html.parser')
+            
+            # Buscar la obra social en el resultado
+            obra_social_tag = soup_result.find('span', {'id': 'ContentPlaceHolder1_lblObraSocial'})
+            if obra_social_tag:
+                resultado_codem["Obra Social CODEM"] = obra_social_tag.text.strip()
+                log_message(f"CODEM: Obra social obtenida: {resultado_codem['Obra Social CODEM']}")
+            
+            # Buscar familiares (si hay)
+            familiares_tag = soup_result.find('span', {'id': 'ContentPlaceHolder1_lblFamiliares'})
+            if familiares_tag:
+                resultado_codem["Familiares"] = familiares_tag.text.strip()
+                log_message("CODEM: Familiares obtenidos")
+        else:
+            log_message(f"CODEM: Error HTTP {response_post.status_code}")
+            
+    except Exception as e:
+        log_message(f"CODEM Error: {str(e)[:50]}")
+    
+    return resultado_codem
 
-# --- Lógica principal ---
+# ==================== LÓGICA PRINCIPAL ====================
 if buscar_btn and dni_input:
     lista_dnis = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if not lista_dnis:
         st.warning("Ingresá al menos un DNI.")
     else:
-        # Registrar tiempo total de inicio
-        tiempo_inicio_total = time.time()
-        
-        # Iniciar driver una sola vez
-        driver = iniciar_driver()
+        # Iniciar driver de SISA (solo una vez)
+        driver_sisa = iniciar_driver_sisa()
         resultados = []
         barra = st.progress(0)
         status_text = st.empty()
-        campo_dni = None
-        primer_dni = True
-
+        
         for i, dni in enumerate(lista_dnis):
-            # Registrar tiempo por DNI
-            tiempo_inicio_dni = time.time()
-            status_text.text(f"Consultando DNI {dni}...")
+            status_text.text(f"Procesando DNI {dni}...")
             
-            resultado = {
+            # 1. Consultar SISA
+            log_message(f"\n--- DNI {dni} ---")
+            datos_sisa = consultar_sisa_selenium(driver_sisa, dni, es_primer_dni=(i==0))
+            
+            # 2. Consultar CODEM
+            datos_codem = consultar_codem_requests(dni)
+            
+            # 3. Combinar resultados
+            resultado_final = {
                 "DNI": dni,
-                "TipoDoc": "",
-                "NroDoc": "",
-                "Sexo": "",
-                "Cobertura Social": "",
-                "Denominación": "",
-                "Estado": "❌ Fallo",
-                "Tiempo (s)": 0
+                **datos_sisa,
+                **datos_codem
             }
             
-            try:
-                if primer_dni:
-                    # ---- Primer DNI: navegación completa ----
-                    log_message(f"Iniciando consulta para DNI {dni}")
-                    driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
-                    log_message("Esperando módulo PUCO...")
-                    try:
-                        puco = WebDriverWait(driver, 15).until(
-                            EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
-                        )
-                    except TimeoutException:
-                        puco = WebDriverWait(driver, 5).until(
-                            EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'consulta de cobertura')]"))
-                        )
-                    
-                    time.sleep(random.uniform(1, 2))
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", puco)
-                    time.sleep(random.uniform(0.3, 0.8))
-                    driver.execute_script("arguments[0].click();", puco)
-                    log_message("Módulo PUCO clickeado.")
-                    
-                    # Esperar campo DNI
-                    campo_dni = esperar_campo_dni(driver)
-                    if not campo_dni:
-                        raise Exception("No se pudo obtener el campo DNI.")
-                    
-                    primer_dni = False
-                else:
-                    # ---- DNIs siguientes: solo usar el campo existente ----
-                    log_message(f"Usando sesión existente para DNI {dni}")
-                    if not campo_dni:
-                        # Si por alguna razón se perdió el campo, reintentar
-                        campo_dni = esperar_campo_dni(driver)
-                        if not campo_dni:
-                            raise Exception("Campo DNI no disponible.")
-                
-                # --- Ingresar DNI y enviar ENTER ---
-                campo_dni.clear()
-                time.sleep(random.uniform(0.2, 0.5))
-                campo_dni.send_keys(str(dni))
-                time.sleep(random.uniform(0.3, 0.7))
-                campo_dni.send_keys(Keys.RETURN)
-                log_message("Enter enviado.")
-                
-                # --- Esperar resultados ---
-                try:
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH, f"//td[contains(text(), '{dni}')]"))
-                    )
-                except TimeoutException:
-                    body = driver.find_element(By.TAG_NAME, "body").text
-                    if "no se encontraron" in body.lower() or "sin resultados" in body.lower():
-                        resultado["Estado"] = "❌ No encontrado"
-                        log_message("DNI no encontrado.")
-                        # Calcular tiempo y agregar resultado
-                        tiempo_fin_dni = time.time()
-                        resultado["Tiempo (s)"] = round(tiempo_fin_dni - tiempo_inicio_dni, 2)
-                        resultados.append(resultado)
-                        barra.progress((i + 1) / len(lista_dnis))
-                        continue
-                    else:
-                        log_message("Esperando un poco más...")
-                        time.sleep(2)
-                
-                time.sleep(random.uniform(0.5, 1))
-                
-                # --- Extraer datos ---
-                celdas = extraer_datos_fila(driver, dni)
-                if celdas:
-                    if len(celdas) >= 1:
-                        resultado["TipoDoc"] = celdas[0].text.strip()
-                    if len(celdas) >= 2:
-                        resultado["NroDoc"] = celdas[1].text.strip()
-                    if len(celdas) >= 3:
-                        resultado["Sexo"] = celdas[2].text.strip()
-                    if len(celdas) >= 4:
-                        resultado["Cobertura Social"] = celdas[3].text.strip()
-                    if len(celdas) >= 5:
-                        resultado["Denominación"] = celdas[4].text.strip()
-                    resultado["Estado"] = "✅ OK"
-                    log_message("Datos extraídos correctamente.")
-                else:
-                    resultado["Estado"] = "❌ No se encontró fila con DNI"
-                    log_message("No se encontró la fila del DNI.")
-                
-            except Exception as e:
-                error_msg = str(e)[:100]
-                resultado["Estado"] = f"Error: {error_msg}"
-                log_message(f"❌ Error: {error_msg}")
-                
-                # Si el error es grave, forzar refresh para el próximo DNI
-                try:
-                    driver.refresh()
-                    time.sleep(3)
-                    campo_dni = esperar_campo_dni(driver)
-                except:
-                    campo_dni = None
-            
-            # Calcular tiempo y agregar resultado
-            tiempo_fin_dni = time.time()
-            resultado["Tiempo (s)"] = round(tiempo_fin_dni - tiempo_inicio_dni, 2)
-            resultados.append(resultado)
+            resultados.append(resultado_final)
             barra.progress((i + 1) / len(lista_dnis))
             
-            # Pausa aleatoria entre DNIs (1-2 segundos)
+            # Pausa entre DNIs
             if i < len(lista_dnis) - 1:
-                pausa = random.uniform(1, 2)
-                log_message(f"Espera entre DNIs de {pausa:.1f}s.")
+                pausa = random.uniform(2, 4)
+                log_message(f"Espera entre DNIs de {pausa:.1f}s")
                 time.sleep(pausa)
         
-        # Cerrar driver al final
-        driver.quit()
-        
-        # Calcular tiempo total
-        tiempo_fin_total = time.time()
-        tiempo_total = round(tiempo_fin_total - tiempo_inicio_total, 2)
-        promedio = round(tiempo_total / len(lista_dnis), 2)
+        # Cerrar driver de SISA
+        driver_sisa.quit()
         
         status_text.text("¡Proceso completado!")
-        
-        # Mostrar resumen de tiempos
-        st.success(f"✅ Tiempo total: {tiempo_total}s | Promedio por DNI: {promedio}s")
-        
         df = pd.DataFrame(resultados)
         st.dataframe(df, use_container_width=True, hide_index=True)
         
@@ -263,6 +263,6 @@ if buscar_btn and dni_input:
         st.download_button(
             label="📥 Descargar CSV",
             data=csv,
-            file_name="resultados_puco.csv",
+            file_name="resultados_completos.csv",
             mime="text/csv"
         )
