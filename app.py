@@ -10,7 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 
 st.set_page_config(page_title="HACER LA PC - Completo", layout="wide")
 st.title("💻 HACER LA PC - Control Completo (SISA + CODEM)")
@@ -50,6 +50,42 @@ def iniciar_driver_sisa():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
+def encontrar_campo_dni_sisa(driver, despues_refresh=False):
+    """Busca el campo DNI en SISA, con opción de re-clicar en PUCO si es necesario."""
+    if despues_refresh:
+        # Después de refresh, volver a buscar y clickear PUCO
+        try:
+            puco = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", puco)
+            time.sleep(1)
+            driver.execute_script("arguments[0].click();", puco)
+            log_message("SISA: Módulo PUCO clickeado tras refresh")
+            time.sleep(3)
+        except:
+            pass
+    
+    # Intentar encontrar campo DNI
+    for intento in range(3):
+        try:
+            campo = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[contains(@name, 'dni')]"))
+            )
+            log_message("SISA: Campo DNI encontrado")
+            return campo
+        except:
+            log_message(f"SISA: Reintentando campo DNI ({intento+1}/3)")
+            time.sleep(2)
+    
+    # Último recurso: buscar cualquier input visible
+    inputs = driver.find_elements(By.TAG_NAME, "input")
+    for inp in inputs:
+        if inp.is_displayed() and inp.get_attribute("type") in ["text", "search"]:
+            log_message("SISA: Campo DNI encontrado como input visible")
+            return inp
+    return None
+
 def consultar_sisa_selenium(driver, dni, es_primer_dni):
     resultado_sisa = {
         "TipoDoc": "",
@@ -79,40 +115,25 @@ def consultar_sisa_selenium(driver, dni, es_primer_dni):
             driver.execute_script("arguments[0].click();", puco)
             log_message("Módulo PUCO clickeado.")
             
-            # Esperar campo DNI con reintentos
-            campo_dni = None
-            for intento in range(3):
-                try:
-                    campo_dni = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, "//input[contains(@name, 'dni')]"))
-                    )
-                    log_message("Campo DNI encontrado.")
-                    break
-                except:
-                    log_message(f"SISA: Reintentando búsqueda de campo DNI ({intento+1}/3)")
-                    time.sleep(2)
-            
+            # Obtener campo DNI
+            campo_dni = encontrar_campo_dni_sisa(driver, despues_refresh=False)
             if not campo_dni:
+                # Si no aparece, refrescar y reintentar
                 log_message("SISA: Refrescando página...")
                 driver.refresh()
                 time.sleep(3)
-                try:
-                    campo_dni = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, "//input[contains(@name, 'dni')]"))
-                    )
-                except:
-                    # Último recurso: buscar cualquier input visible
-                    inputs = driver.find_elements(By.TAG_NAME, "input")
-                    for inp in inputs:
-                        if inp.is_displayed() and inp.get_attribute("type") in ["text", "search"]:
-                            campo_dni = inp
-                            log_message("SISA: Campo DNI encontrado como input visible")
-                            break
-                    if not campo_dni:
-                        raise Exception("No se encontró campo DNI en SISA")
+                campo_dni = encontrar_campo_dni_sisa(driver, despues_refresh=True)
+                if not campo_dni:
+                    raise Exception("No se encontró campo DNI en SISA")
         else:
-            # Reutilizar el campo existente
-            campo_dni = driver.find_element(By.XPATH, "//input[contains(@name, 'dni')]")
+            # Reutilizar el campo existente (puede haberse vuelto obsoleto)
+            try:
+                campo_dni = driver.find_element(By.XPATH, "//input[contains(@name, 'dni')]")
+            except:
+                # Si falla, buscarlo de nuevo
+                campo_dni = encontrar_campo_dni_sisa(driver, despues_refresh=False)
+                if not campo_dni:
+                    raise Exception("Campo DNI no disponible en SISA")
         
         # Ingresar DNI y enviar ENTER
         campo_dni.clear()
@@ -161,7 +182,6 @@ def consultar_sisa_selenium(driver, dni, es_primer_dni):
 
 # ==================== FUNCIONES CODEM (REQUESTS + FALLBACK SELENIUM) ====================
 def obtener_campos_codem_con_requests():
-    """Obtiene los campos ocultos del formulario CODEM usando requests."""
     url = "https://servicioswww.anses.gob.ar/ooss2/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
@@ -178,31 +198,36 @@ def obtener_campos_codem_con_requests():
     }
     
     session = requests.Session()
-    response = session.get(url, headers=headers, timeout=10)
-    if response.status_code != 200:
-        return None, None, None, None
-    
-    soup = BeautifulSoup(response.text, 'html.parser')
-    viewstate = soup.find('input', {'name': '__VIEWSTATE'})
-    viewstategen = soup.find('input', {'name': '__VIEWSTATEGENERATOR'})
-    eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'})
-    
-    if viewstate and eventvalidation:
-        return session, viewstate['value'], viewstategen['value'] if viewstategen else '', eventvalidation['value']
+    try:
+        response = session.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return None, None, None, None
+        soup = BeautifulSoup(response.text, 'html.parser')
+        viewstate = soup.find('input', {'name': '__VIEWSTATE'})
+        viewstategen = soup.find('input', {'name': '__VIEWSTATEGENERATOR'})
+        eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'})
+        if viewstate and eventvalidation:
+            return session, viewstate['value'], viewstategen['value'] if viewstategen else '', eventvalidation['value']
+    except:
+        pass
     return None, None, None, None
 
 def consultar_codem_selenium(dni):
-    """Fallback: usa Selenium para consultar CODEM si requests falla."""
     log_message(f"CODEM: Usando Selenium para DNI {dni}")
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(options=options)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    driver = None
     resultado = {"Obra Social CODEM": "", "Familiares": ""}
     
     try:
+        driver = webdriver.Chrome(options=options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
         time.sleep(2)
         
@@ -223,23 +248,21 @@ def consultar_codem_selenium(dni):
         obra = soup.find('span', {'id': 'ContentPlaceHolder1_lblObraSocial'})
         if obra:
             resultado["Obra Social CODEM"] = obra.text.strip()
-        
+            log_message(f"CODEM Selenium: Obra social obtenida")
         familia = soup.find('span', {'id': 'ContentPlaceHolder1_lblFamiliares'})
         if familia:
             resultado["Familiares"] = familia.text.strip()
+            log_message("CODEM Selenium: Familiares obtenidos")
             
     except Exception as e:
         log_message(f"CODEM Selenium Error: {str(e)[:50]}")
     finally:
-        driver.quit()
-    
+        if driver:
+            driver.quit()
     return resultado
 
 def consultar_codem_requests(dni):
-    """Intenta consultar CODEM con requests; si falla, usa Selenium."""
     resultado = {"Obra Social CODEM": "", "Familiares": ""}
-    
-    # Intentar con requests
     session, viewstate, viewstategen, eventvalidation = obtener_campos_codem_con_requests()
     if session and viewstate and eventvalidation:
         try:
@@ -260,7 +283,6 @@ def consultar_codem_requests(dni):
                 "Referer": "https://servicioswww.anses.gob.ar/ooss2/",
             }
             response = session.post("https://servicioswww.anses.gob.ar/ooss2/", data=data, headers=headers_post, timeout=15)
-            
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, 'html.parser')
                 obra = soup.find('span', {'id': 'ContentPlaceHolder1_lblObraSocial'})
@@ -274,8 +296,6 @@ def consultar_codem_requests(dni):
                 return resultado
         except Exception as e:
             log_message(f"CODEM requests error: {str(e)[:50]}, usando fallback Selenium")
-    
-    # Fallback a Selenium
     return consultar_codem_selenium(dni)
 
 # ==================== LÓGICA PRINCIPAL ====================
