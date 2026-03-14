@@ -65,13 +65,16 @@ def consultar_sisa_selenium(driver, dni, es_primer_dni):
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
             log_message("Esperando módulo PUCO...")
             try:
-                puco = WebDriverWait(driver, 15).until(
+                puco = WebDriverWait(driver, 20).until(
                     EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
                 )
             except TimeoutException:
-                puco = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'consulta de cobertura')]"))
-                )
+                try:
+                    puco = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'consulta de cobertura')]"))
+                    )
+                except TimeoutException:
+                    raise Exception("No se encontró el módulo PUCO")
             
             time.sleep(random.uniform(1, 2))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", puco)
@@ -79,21 +82,58 @@ def consultar_sisa_selenium(driver, dni, es_primer_dni):
             driver.execute_script("arguments[0].click();", puco)
             log_message("Módulo PUCO clickeado.")
             
-            # Esperar campo DNI
-            campo_dni = None
-            for intento in range(3):
+            # Esperar un poco para que cargue el formulario
+            time.sleep(3)
+        
+        # Buscar campo DNI con reintentos
+        campo_dni = None
+        selectores_dni = [
+            "//input[contains(@name, 'dni')]",
+            "//input[contains(@id, 'dni')]",
+            "//input[@type='text' and contains(@placeholder, 'DNI')]",
+            "//input[contains(@class, 'dni')]"
+        ]
+        
+        for intento in range(3):
+            for selector in selectores_dni:
                 try:
                     campo_dni = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, "//input[contains(@name, 'dni')]"))
+                        EC.element_to_be_clickable((By.XPATH, selector))
                     )
+                    log_message(f"SISA: Campo DNI encontrado con selector: {selector}")
                     break
                 except:
+                    continue
+            if campo_dni:
+                break
+            log_message(f"SISA: Reintentando búsqueda de campo DNI ({intento+1}/3)")
+            time.sleep(2)
+            # Si es el segundo intento y falla, refrescar la página
+            if intento == 1:
+                log_message("SISA: Refrescando página...")
+                driver.refresh()
+                time.sleep(3)
+                # Volver a buscar el módulo PUCO si es necesario
+                try:
+                    puco = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]"))
+                    )
+                    driver.execute_script("arguments[0].click();", puco)
                     time.sleep(2)
-            if not campo_dni:
-                raise Exception("No se encontró campo DNI en SISA")
-        else:
-            # Reutilizar el campo existente
-            campo_dni = driver.find_element(By.XPATH, "//input[contains(@name, 'dni')]")
+                except:
+                    pass
+        
+        if not campo_dni:
+            # Último recurso: buscar cualquier input visible
+            inputs = driver.find_elements(By.TAG_NAME, "input")
+            for inp in inputs:
+                if inp.is_displayed() and inp.get_attribute("type") in ["text", "search"]:
+                    campo_dni = inp
+                    log_message("SISA: Campo DNI encontrado como input visible")
+                    break
+        
+        if not campo_dni:
+            raise Exception("No se encontró campo DNI en SISA")
         
         # Ingresar DNI y enviar ENTER
         campo_dni.clear()
@@ -103,13 +143,14 @@ def consultar_sisa_selenium(driver, dni, es_primer_dni):
         campo_dni.send_keys(Keys.RETURN)
         log_message(f"SISA: Enter enviado para DNI {dni}")
         
-        # Esperar resultados
+        # Esperar resultados (que aparezca el DNI en alguna celda)
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.XPATH, f"//td[contains(text(), '{dni}')]"))
             )
+            log_message("SISA: Resultados detectados")
         except TimeoutException:
-            log_message("SISA: Tiempo de espera agotado")
+            log_message("SISA: Tiempo de espera agotado para resultados")
             return resultado_sisa
         
         time.sleep(random.uniform(0.5, 1))
@@ -129,14 +170,14 @@ def consultar_sisa_selenium(driver, dni, es_primer_dni):
                         resultado_sisa["Sexo"] = celdas_fila[2].text.strip()
                         resultado_sisa["Cobertura SISA"] = celdas_fila[3].text.strip()
                         resultado_sisa["Denominación"] = celdas_fila[4].text.strip()
-                        log_message(f"SISA: Datos extraídos OK")
+                        log_message("SISA: Datos extraídos OK")
                         return resultado_sisa
         
-        log_message("SISA: No se encontraron datos")
+        log_message("SISA: No se encontraron datos en la tabla")
         return resultado_sisa
         
     except Exception as e:
-        log_message(f"SISA Error: {str(e)[:50]}")
+        log_message(f"SISA Error: {str(e)[:100]}")
         return resultado_sisa
 
 # ==================== FUNCIONES CODEM (REQUESTS) ====================
@@ -163,6 +204,10 @@ def consultar_codem_requests(dni):
         }
         
         response = session.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            log_message(f"CODEM: Error al obtener formulario, código {response.status_code}")
+            return resultado_codem
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Extraer campos ocultos del ASP.NET
@@ -170,6 +215,7 @@ def consultar_codem_requests(dni):
         viewstategen = soup.find('input', {'name': '__VIEWSTATEGENERATOR'})
         eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'})
         
+        # Verificar que se encontraron
         if not viewstate or not eventvalidation:
             log_message("CODEM: No se pudieron obtener campos del formulario")
             return resultado_codem
@@ -190,7 +236,7 @@ def consultar_codem_requests(dni):
         headers_post = headers.copy()
         headers_post["Content-Type"] = "application/x-www-form-urlencoded"
         
-        response_post = session.post(url, data=data, headers=headers_post, timeout=15)
+        response_post = session.post(url, data=data, headers=headers_post, timeout=15, allow_redirects=True)
         
         if response_post.status_code == 200:
             soup_result = BeautifulSoup(response_post.text, 'html.parser')
@@ -200,6 +246,13 @@ def consultar_codem_requests(dni):
             if obra_social_tag:
                 resultado_codem["Obra Social CODEM"] = obra_social_tag.text.strip()
                 log_message(f"CODEM: Obra social obtenida: {resultado_codem['Obra Social CODEM']}")
+            else:
+                # Podría haber un mensaje de error
+                error_tag = soup_result.find('span', {'id': 'ContentPlaceHolder1_lblError'})
+                if error_tag:
+                    log_message(f"CODEM: Error devuelto: {error_tag.text.strip()}")
+                else:
+                    log_message("CODEM: No se encontró la obra social en la respuesta")
             
             # Buscar familiares (si hay)
             familiares_tag = soup_result.find('span', {'id': 'ContentPlaceHolder1_lblFamiliares'})
@@ -210,7 +263,7 @@ def consultar_codem_requests(dni):
             log_message(f"CODEM: Error HTTP {response_post.status_code}")
             
     except Exception as e:
-        log_message(f"CODEM Error: {str(e)[:50]}")
+        log_message(f"CODEM Error: {str(e)[:100]}")
     
     return resultado_codem
 
