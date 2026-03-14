@@ -2,58 +2,49 @@ import streamlit as st
 import pandas as pd
 import time
 import random
+import undetected_chromedriver as uc
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="HACER LA PC - Completo", layout="wide")
-st.title("💻 HACER LA PC - Control SISA + CODEM")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="HACER LA PC - Ultra Sigilo", layout="wide")
+st.title("💻 HACER LA PC - Sistema de Consulta Unificado")
 
+# Estilo para la tabla de resultados
 st.markdown("""
 <style>
-    .stDataFrame { border: 1px solid #38bdf8; border-radius: 10px; }
+    .stDataFrame { border: 2px solid #0ea5e9; border-radius: 10px; }
+    .stStatus { font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 with st.container():
-    st.subheader("📋 Ingreso de DNI")
-    dni_input = st.text_area("Escribí un DNI por línea:", height=150, placeholder="Ejemplo:\n17998675")
-    buscar_btn = st.button("🚀 Iniciar Consulta Dual", type="primary")
+    st.subheader("📋 Carga de Datos (OSECAC)")
+    dni_input = st.text_area("Ingresá los DNI (uno por línea):", height=150)
+    buscar_btn = st.button("🚀 Ejecutar Consulta de Seguridad", type="primary")
 
-log_container = st.expander("📋 Log de ejecución detallado", expanded=True)
+log_container = st.expander("📋 Log de Inteligencia", expanded=True)
 
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-def iniciar_driver():
-    options = Options()
-    # Cambiamos a un modo headless menos "obvio"
-    options.add_argument("--headless=new") 
+# --- EL MOTOR UNDETECTED ---
+def iniciar_driver_uc():
+    options = uc.ChromeOptions()
+    options.add_argument("--headless")  # Modo invisible
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
     
-    # Camuflaje de identidad avanzado
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    driver = webdriver.Chrome(options=options)
-    
-    # Script para borrar cualquier rastro de Selenium en el navegador
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    # Iniciamos el driver parcheado
+    driver = uc.Chrome(options=options, version_main=122) # Ajustar según tu Chrome
     return driver
 
 # ==================== FUNCIÓN SISA ====================
 def consultar_sisa(driver, dni, es_primer_dni):
-    resultado = {"TipoDoc": "", "NroDoc": "", "Sexo": "", "Cobertura SISA": "Sin datos", "Denominación": ""}
+    res = {"Tipo": "", "DNI": "", "Sexo": "", "SISA": "N/A", "Denom": ""}
     try:
         if es_primer_dni:
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
@@ -62,111 +53,91 @@ def consultar_sisa(driver, dni, es_primer_dni):
             driver.execute_script("arguments[0].click();", puco)
             time.sleep(2)
         
-        campo_dni = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "input")))
-        campo_dni.clear()
-        for char in str(dni):
-            campo_dni.send_keys(char)
-            time.sleep(random.uniform(0.1, 0.2))
+        campo = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.TAG_NAME, "input")))
+        campo.clear()
+        campo.send_keys(str(dni))
+        campo.send_keys(Keys.RETURN)
         
-        campo_dni.send_keys(Keys.RETURN)
-        
-        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, f"//td[contains(text(), '{dni}')]")))
-        fila = driver.find_element(By.XPATH, f"//td[contains(text(), '{dni}')]/..")
+        target = f"//td[contains(text(), '{dni}')]"
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, target)))
+        fila = driver.find_element(By.XPATH, f"{target}/..")
         celdas = fila.find_elements(By.TAG_NAME, "td")
+        
         if len(celdas) >= 5:
-            resultado = {
-                "TipoDoc": celdas[0].text.strip(), "NroDoc": celdas[1].text.strip(),
-                "Sexo": celdas[2].text.strip(), "Cobertura SISA": celdas[3].text.strip(),
-                "Denominación": celdas[4].text.strip()
-            }
+            res = {"Tipo": celdas[0].text, "DNI": celdas[1].text, "Sexo": celdas[2].text, "SISA": celdas[3].text, "Denom": celdas[4].text}
             log_message(f"✅ SISA OK: {dni}")
     except:
-        log_message(f"⚠️ SISA: Sin datos para {dni}")
-    return resultado
+        log_message(f"⚠️ SISA: Sin respuesta para {dni}")
+    return res
 
-# ==================== FUNCIÓN CODEM (NUEVA ESTRATEGIA) ====================
+# ==================== FUNCIÓN CODEM (MODO FANTASMA) ====================
 def consultar_codem(driver, dni):
-    resultado = {"Obra Social CODEM": "No encontrado", "Familiares": "0"}
+    res = {"CODEM": "No hallado", "Familiares": "0"}
     try:
-        # 1. Limpiar cookies para que ANSES no nos rastree entre consultas
-        driver.delete_all_cookies()
+        # Generar "ruido" de navegación
+        driver.get("https://www.bing.com") 
+        time.sleep(2)
+        
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
+        time.sleep(random.uniform(5, 8))
         
-        # Espera aleatoria larga inicial
-        time.sleep(random.uniform(7, 10)) 
+        campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
         
-        driver.switch_to.default_content()
-
-        # 2. Localizar campo DNI con un selector más genérico por si cambia el ID
-        campo = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text']"))
-        )
-        
-        # Simulación de escritura errática (como alguien que se equivoca)
+        # Click "humano" y escritura con pausas orgánicas
+        campo.click()
         for char in str(dni):
             campo.send_keys(char)
-            time.sleep(random.uniform(0.2, 0.5))
+            time.sleep(random.uniform(0.1, 0.4))
         
-        time.sleep(random.uniform(2, 4))
+        time.sleep(1.5)
+        btn = driver.find_element(By.ID, "ContentPlaceHolder1_Button1")
+        driver.execute_script("arguments[0].click();", btn)
         
-        # 3. Click en el botón usando JavaScript para evitar detección de puntero
-        boton = driver.find_element(By.CSS_SELECTOR, "input[type='submit']")
-        driver.execute_script("arguments[0].click();", boton)
-        
-        # 4. Esperar la respuesta con un tiempo de gracia mayor
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//*[contains(@id, 'lblObraSocial')]"))
-        )
+        # Esperar el elemento de respuesta
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_lblObraSocial")))
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        obra = soup.find(id=lambda x: x and 'lblObraSocial' in x)
-        familia = soup.find(id=lambda x: x and 'lblFamiliares' in x)
+        os_elem = soup.find(id="ContentPlaceHolder1_lblObraSocial")
+        fa_elem = soup.find(id="ContentPlaceHolder1_lblFamiliares")
         
-        resultado["Obra Social CODEM"] = obra.text.strip() if (obra and obra.text.strip()) else "Sin Obra Social"
-        resultado["Familiares"] = familia.text.strip() if familia else "0"
+        res["CODEM"] = os_elem.text.strip() if os_elem else "Sin datos"
+        res["Familiares"] = fa_elem.text.strip() if fa_elem else "0"
         log_message(f"✅ CODEM OK: {dni}")
 
     except Exception:
-        source = driver.page_source.lower()
-        if "captcha" in source or "robot" in source:
-            log_message(f"❌ CODEM bloqueado por CAPTCHA para {dni}")
-        elif "no existe" in source:
-            resultado["Obra Social CODEM"] = "DNI Inexistente"
-            log_message(f"⚠️ CODEM: {dni} no existe")
+        if "captcha" in driver.page_source.lower():
+            log_message(f"❌ CODEM: Bloqueo de seguridad detectado para {dni}")
         else:
-            log_message(f"❌ CODEM: Fallo de sistema para {dni}")
-            
-    return resultado
+            log_message(f"❌ CODEM: Error en la consulta de {dni}")
+    return res
 
-# ==================== PROCESO ====================
+# --- PROCESO PRINCIPAL ---
 if buscar_btn and dni_input:
     dnis = [d.strip() for d in dni_input.split('\n') if d.strip()]
     
     if dnis:
-        with st.status("Procesando (modo sigilo activado)...", expanded=True) as status:
-            # Fase SISA
-            log_message("Consultando SISA...")
-            driver_sisa = iniciar_driver()
-            res_sisa = [consultar_sisa(driver_sisa, d, i==0) for i, d in enumerate(dnis)]
-            driver_sisa.quit()
+        with st.status("Iniciando bypass de seguridad y consulta...", expanded=True) as status:
+            # Fase 1: SISA
+            log_message("Conectando con SISA...")
+            driver_s = iniciar_driver_uc()
+            res_sisa = [consultar_sisa(driver_s, d, i==0) for i, d in enumerate(dnis)]
+            driver_s.quit()
             
-            # Pausa profunda para "enfriar" la IP
-            log_message("Esperando 12 segundos para evitar bloqueos...")
-            time.sleep(12)
+            time.sleep(5)
             
-            # Fase CODEM
-            log_message("Consultando CODEM (lentitud máxima)...")
-            driver_codem = iniciar_driver()
-            res_codem = [consultar_codem(driver_codem, d) for d in dnis]
-            driver_codem.quit()
+            # Fase 2: CODEM
+            log_message("Conectando con ANSES (Modo Undetected)...")
+            driver_c = iniciar_driver_uc()
+            res_codem = [consultar_codem(driver_c, d) for d in dnis]
+            driver_c.quit()
             
-            status.update(label="Proceso completado.", state="complete", expanded=False)
+            status.update(label="Consultas completadas.", state="complete")
 
-        # Resultados finales
-        data = []
-        for i, dni in enumerate(dnis):
-            data.append({"DNI": dni, **res_sisa[i], **res_codem[i]})
+        # Armado de tabla
+        final_data = []
+        for i, d in enumerate(dnis):
+            final_data.append({"DNI": d, **res_sisa[i], **res_codem[i]})
         
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(final_data)
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "hacer_pc.csv")
+        st.download_button("📥 Descargar Planilla Final", df.to_csv(index=False).encode('utf-8'), "hacer_pc_pro.csv")
