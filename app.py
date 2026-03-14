@@ -10,27 +10,26 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- 1. CONFIGURACIÓN INICIAL ---
-st.set_page_config(page_title="HACER LA PC - Estable", layout="wide")
-st.title("💻 HACER LA PC - SISA + CODEM")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="HACER LA PC - OSECAC", layout="wide")
+st.title("💻 HACER LA PC - Sistema Unificado")
 
-# Definimos la interfaz PRIMERO para que las variables existan
 with st.container():
     st.subheader("📋 Ingreso de Datos")
     dni_input = st.text_area("Escribí los DNI (uno por línea):", height=150)
-    buscar_btn = st.button("🚀 Iniciar Consulta", type="primary")
+    buscar_btn = st.button("🚀 Iniciar Consulta Dual", type="primary")
 
 log_container = st.expander("📋 Log de ejecución", expanded=True)
-
 def log_message(msg):
     log_container.markdown(f"- {msg}")
 
-# --- 2. EL MOTOR (DRIVER) ---
+# --- 2. EL MOTOR (Mantenemos headless para que funcione en Streamlit Cloud) ---
 def iniciar_driver():
     options = Options()
-    options.add_argument("--headless=new")
+    options.add_argument("--headless=new") # Necesario para la web
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -40,13 +39,13 @@ def iniciar_driver():
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
-# --- 3. FUNCIONES DE BÚSQUEDA ---
+# --- 3. FUNCIONES ---
 def consultar_sisa(driver, dni, es_primer_dni):
-    res = {"SISA": "Sin datos", "Obra Social": "N/A"}
+    res = {"SISA": "Sin datos", "OS_SISA": "N/A"}
     try:
         if es_primer_dni:
             driver.get("https://sisa.msal.gov.ar/sisa/#sisa")
-            time.sleep(5)
+            time.sleep(6)
             puco = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'PUCO')]")))
             driver.execute_script("arguments[0].click();", puco)
             time.sleep(2)
@@ -57,11 +56,11 @@ def consultar_sisa(driver, dni, es_primer_dni):
         campo.send_keys(Keys.RETURN)
         
         target = f"//td[contains(text(), '{dni}')]"
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, target)))
+        WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
         fila = driver.find_element(By.XPATH, f"{target}/..")
         cols = fila.find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
-            res = {"SISA": cols[3].text, "Obra Social": cols[4].text}
+            res = {"SISA": cols[3].text, "OS_SISA": cols[4].text}
             log_message(f"✅ SISA OK: {dni}")
     except:
         log_message(f"⚠️ SISA: No hallado {dni}")
@@ -70,12 +69,12 @@ def consultar_sisa(driver, dni, es_primer_dni):
 def consultar_codem(driver, dni):
     res = {"CODEM": "No hallado"}
     try:
-        driver.get("https://www.google.com")
-        time.sleep(1)
         driver.get("https://servicioswww.anses.gob.ar/ooss2/")
-        time.sleep(random.uniform(6, 9))
+        # Más tiempo de espera como sugirió GPT
+        time.sleep(random.uniform(9, 12))
         
         campo = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDoc")))
+        campo.clear()
         
         for char in str(dni):
             campo.send_keys(char)
@@ -85,39 +84,45 @@ def consultar_codem(driver, dni):
         btn = driver.find_element(By.ID, "ContentPlaceHolder1_Button1")
         driver.execute_script("arguments[0].click();", btn)
         
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_lblObraSocial")))
+        # Espera después del click
+        time.sleep(5)
         
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        os_text = soup.find(id="ContentPlaceHolder1_lblObraSocial")
-        res["CODEM"] = os_text.text.strip() if os_text else "Sin datos"
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        texto = soup.get_text()
+
+        # Mejora en la captura de datos (Lectura de texto plano)
+        if "Obra Social" in texto:
+            res["CODEM"] = texto.split("Obra Social")[-1][:80].strip().replace("\n", " ")
+        else:
+            res["CODEM"] = "Sin datos en pantalla"
+            
         log_message(f"✅ CODEM OK: {dni}")
     except Exception:
         log_message(f"❌ CODEM: Fallo o Captcha en {dni}")
     return res
 
-# --- 4. PROCESAMIENTO (EL BLOQUE DEL ERROR) ---
+# --- 4. EJECUCIÓN ---
 if buscar_btn and dni_input:
     lista_dni = [d.strip() for d in dni_input.split('\n') if d.strip()]
     if lista_dni:
-        with st.status("Consultando bases de datos...", expanded=True) as status:
-            log_message("Iniciando Fase SISA...")
+        with st.status("Procesando consulta dual...", expanded=True) as status:
+            log_message("Fase SISA...")
             d1 = iniciar_driver()
             r1 = [consultar_sisa(d1, d, i==0) for i, d in enumerate(lista_dni)]
             d1.quit()
             
             time.sleep(5)
             
-            log_message("Iniciando Fase CODEM...")
+            log_message("Fase CODEM (Sigilo máximo)...")
             d2 = iniciar_driver()
             r2 = [consultar_codem(d2, d) for d in lista_dni]
             d2.quit()
-            status.update(label="Consultas completadas", state="complete")
+            status.update(label="Proceso terminado", state="complete")
 
-        # Armado de la tabla final
-        final_data = []
+        final = []
         for i, d in enumerate(lista_dni):
-            final_data.append({"DNI": d, **r1[i], **r2[i]})
+            final.append({"DNI": d, **r1[i], **r2[i]})
         
-        df = pd.DataFrame(final_data)
+        df = pd.DataFrame(final)
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte.csv")
+        st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "reporte_osecac.csv")
