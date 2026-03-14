@@ -50,7 +50,8 @@ def consultar_sisa(driver, dni, es_primero):
         WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, target)))
         cols = driver.find_element(By.XPATH, f"{target}/..").find_elements(By.TAG_NAME, "td")
         if len(cols) >= 5:
-            res = {"NOMBRE": cols[3].text, "OS_SISA": cols[4].text}
+            # CORRECCIÓN: cols[3] es el nombre, cols[4] es la obra social
+            res = {"NOMBRE": cols[3].text.strip(), "OS_SISA": cols[4].text.strip()}
             log_message(f"✅ SISA OK: {dni}")
     except:
         log_message(f"⚠️ SISA: No hallado {dni}")
@@ -69,20 +70,21 @@ def consultar_codem(driver, dni):
         time.sleep(8)
         
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        celdas = [c.get_text().strip() for c in soup.find_all('td')]
-        
-        if "Descripción" in celdas:
-            idx = celdas.index("Descripción")
-            res["OS_ANSES"] = celdas[idx + 6]
-        if "Parentesco" in celdas:
-            idx = celdas.index("Parentesco")
-            res["CONDICION"] = celdas[idx + 6]
-        if "Situación" in celdas:
-            idx = celdas.index("Situación")
-            res["SITUACION"] = celdas[idx + 6]
-            
-        log_message(f"✅ CODEM OK: {dni}")
-    except:
+        # Buscamos la tabla de resultados
+        tabla = soup.find("table", {"id": "ContentPlaceHolder1_gvGrilla"})
+        if tabla:
+            filas = tabla.find_all("tr")
+            if len(filas) > 1:
+                datos = filas[1].find_all("td")
+                # La estructura de ANSES es fija en la grilla:
+                # 0: Cod OS, 1: Descripción, 2: Parentesco (Condición), 3: Situación, 4: CODEM (impresora)
+                res["OS_ANSES"] = datos[1].get_text().strip()
+                res["CONDICION"] = datos[2].get_text().strip()
+                res["SITUACION"] = datos[3].get_text().strip()
+                log_message(f"✅ CODEM OK: {dni}")
+        else:
+            log_message(f"❌ CODEM: Sin tabla de datos para {dni}")
+    except Exception as e:
         log_message(f"❌ CODEM: Error en {dni}")
     return res
 
@@ -92,8 +94,6 @@ if buscar_btn and dni_input:
     if lista_dni:
         with st.status("Generando reporte detallado...", expanded=True) as status:
             d = iniciar_driver()
-            
-            # Recolectamos datos
             resultados = []
             for i, dni in enumerate(lista_dni):
                 log_message(f"Procesando: {dni}...")
@@ -110,12 +110,9 @@ if buscar_btn and dni_input:
             status.update(label="Informe completo", state="complete")
 
         df = pd.DataFrame(resultados)
-        
-        # Reordenamos las columnas para que sea fácil de leer
         cols_orden = ["DNI", "NOMBRE", "OS_SISA", "OS_ANSES", "CONDICION", "SITUACION"]
         df = df[cols_orden]
         
         st.subheader("📊 Reporte Detallado por Afiliado")
         st.dataframe(df, use_container_width=True, hide_index=True)
-        
         st.download_button("📥 Descargar Planilla", df.to_csv(index=False).encode('utf-8'), "informe_osecac_mdp.csv")
