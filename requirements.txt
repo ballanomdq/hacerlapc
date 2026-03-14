@@ -1,6 +1,6 @@
+streamlit
 selenium
+webdriver-manager
 pandas
 beautifulsoup4
 PyPDF2
-streamlit
-bs4
